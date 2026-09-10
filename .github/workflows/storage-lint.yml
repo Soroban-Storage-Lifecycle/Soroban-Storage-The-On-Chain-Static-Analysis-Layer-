@@ -1,0 +1,41 @@
+# Fails developer builds on storage lint errors.
+#
+# Runs the storage linter over contract sources, builds the example contract
+# for the Soroban wasm target, and executes the full test suite.
+#
+# Consumers: drop this file into your contract repository (adjusting
+# `source-dir` / `contract-package`) or use the packaged action directly:
+#
+#   - uses: your-org/soroban-storage/.github/actions/soroban-storage-check@main
+#     with:
+#       source-dir: src
+#       linter: crates.io        # or a git URL / `workspace`
+name: storage-lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  storage-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lints the example contract, fails on any error or warning, and builds
+      # it for the Soroban wasm target.
+      - uses: ./.github/actions/soroban-storage-check
+        with:
+          source-dir: crates/example-contract/src
+          contract-package: example-contract
+          linter: workspace
+
+      # Full test suite (framework + example contract, on the host).
+      - name: Run tests
+        run: cargo test --workspace
+
+      # Self-check: the linter must also stay clean on the framework sources
+      # and the linter's own fixtures must keep flagging violations.
+      - name: Self-lint framework sources
+        run: cargo run -q -p soroban-storage-lints -- --deny-warnings crates/example-contract/src crates/soroban-storage/src

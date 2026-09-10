@@ -1,0 +1,16 @@
+[package]
+name = "soroban-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Typed storage wrappers for Soroban that enforce explicit lifecycle declarations, auto-bump TTLs on access, and reject critical data in temporary storage at compile time."
+keywords = ["stellar", "soroban", "smart-contract", "ttl", "storage"]
+categories = ["cryptography::cryptocurrencies", "development-tools"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+soroban-storage-macros = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

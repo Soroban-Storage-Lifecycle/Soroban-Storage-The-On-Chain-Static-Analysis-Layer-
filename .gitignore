@@ -1,0 +1,6 @@
+/target
+/.toolchain
+Cargo.lock.orig
+*.profraw
+# Soroban host snapshots (written when a test panics)
+test_snapshots/

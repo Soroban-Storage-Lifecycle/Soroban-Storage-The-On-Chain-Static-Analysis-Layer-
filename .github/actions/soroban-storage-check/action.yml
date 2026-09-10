@@ -1,0 +1,91 @@
+name: "Soroban Storage Check"
+description: >
+  Runs the soroban-storage linter (`cargo soroban-lint`) over a contract's
+  source and optionally builds the contract for the Soroban wasm target.
+  Fails the build when storage lint errors are found (or warnings, with
+  `deny-warnings`).
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  source-dir:
+    description: >
+      Directories to lint, relative to the repository root (space-separated).
+    required: false
+    default: "src"
+  deny-warnings:
+    description: "Fail the build on warnings as well as errors."
+    required: false
+    default: "true"
+  linter:
+    description: >
+      How to obtain the linter binary. `workspace` builds it from the current
+      checkout (use in this repository), `crates.io` installs the published
+      crate, or pass a git URL to install from a fork.
+    required: false
+    default: "workspace"
+  contract-package:
+    description: >
+      Cargo package to build for wasm32v1-none (e.g. `example-contract`). If
+      empty, `cargo build --target wasm32v1-none --release` is run at the
+      workspace root.
+    required: false
+    default: ""
+  build-wasm:
+    description: "Also build the contract for the Soroban wasm target."
+    required: false
+    default: "true"
+  rust-version:
+    description: "Rust toolchain channel to install."
+    required: false
+    default: "1.98.1"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        rustup toolchain install "${{ inputs.rust-version }}" --profile minimal --component clippy,rustfmt
+        rustup target add --toolchain "${{ inputs.rust-version }}" wasm32v1-none
+        rustup default "${{ inputs.rust-version }}"
+
+    - name: Obtain the storage linter
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${{ inputs.linter }}" in
+          workspace)
+            cargo build --release -p soroban-storage-lints
+            echo "${{ github.workspace }}/target/release" >> "$GITHUB_PATH"
+            ;;
+          crates.io)
+            cargo install soroban-storage-lints --locked
+            ;;
+          *)
+            cargo install --git "${{ inputs.linter }}" --locked soroban-storage-lints
+            ;;
+        esac
+
+    - name: Run storage lints
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.deny-warnings }}" = "true" ]; then
+          cargo soroban-lint ${{ inputs.source-dir }} --deny-warnings
+        else
+          cargo soroban-lint ${{ inputs.source-dir }}
+        fi
+
+    - name: Build contract for Soroban wasm
+      if: inputs.build-wasm == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.contract-package }}" ]; then
+          cargo build --release --target wasm32v1-none -p "${{ inputs.contract-package }}"
+        else
+          cargo build --release --target wasm32v1-none
+        fi

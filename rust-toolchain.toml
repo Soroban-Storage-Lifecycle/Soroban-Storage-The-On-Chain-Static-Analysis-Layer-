@@ -1,0 +1,6 @@
+# Pinned toolchain: soroban-sdk 27 requires Rust 1.81+; this is the stable
+# release this workspace was verified against. Bump deliberately.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

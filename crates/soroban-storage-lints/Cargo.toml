@@ -1,0 +1,24 @@
+[package]
+name = "soroban-storage-lints"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Static analysis for Soroban contract storage: flags critical types in temporary storage, missing TTL extensions, and instance-storage bloat. Ships as the `cargo soroban-lint` subcommand."
+keywords = ["stellar", "soroban", "static-analysis", "lint", "storage"]
+categories = ["development-tools"]
+
+# `cargo install soroban-storage-lints` produces the `cargo-soroban-lint`
+# binary, which cargo auto-discovers as the `cargo soroban-lint` subcommand.
+[[bin]]
+name = "cargo-soroban-lint"
+path = "src/main.rs"
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+serde_json = "1"
+syn = { version = "2", features = ["full", "parsing", "printing", "visit"] }
+
+[dev-dependencies]
+# None: tests operate on fixture source files, parsed with syn only.
