@@ -27,6 +27,27 @@ cargo build --release --target wasm32v1-none -p "$CONTRACT_PACKAGE"
 echo "==> full test suite"
 cargo test --workspace
 
+echo "==> build and smoke-test the off-chain tools"
+cargo build -p soroban-rent-keeper -p soroban-restore-planner
+./target/debug/soroban-rent-keeper --help > /dev/null
+./target/debug/soroban-restore-planner --help > /dev/null
+
+set +e
+./target/debug/soroban-rent-keeper --bogus > /dev/null 2>&1
+keeper_usage=$?
+./target/debug/soroban-restore-planner --bogus > /dev/null 2>&1
+planner_usage=$?
+./target/debug/soroban-restore-planner \
+  --contract not-a-strkey --rpc-url http://localhost \
+  --network-passphrase Test > /dev/null 2>&1
+planner_bad_contract=$?
+set -e
+
+[ "$keeper_usage" -eq 2 ] || { echo "keeper usage exit $keeper_usage != 2"; exit 1; }
+[ "$planner_usage" -eq 2 ] || { echo "planner usage exit $planner_usage != 2"; exit 1; }
+[ "$planner_bad_contract" -eq 1 ] || { echo "planner bad-contract exit $planner_bad_contract != 1"; exit 1; }
+echo "off-chain CLI smoke tests OK"
+
 echo "==> clippy"
 cargo clippy --workspace --all-targets -- -D warnings
 
