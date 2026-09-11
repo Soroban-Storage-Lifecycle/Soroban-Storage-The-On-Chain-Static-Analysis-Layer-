@@ -37,10 +37,12 @@ soroban-restore-planner --contract C... --signer-secret S... --submit ...
 | `--key <BASE64_XDR>` | Extra contract-data `LedgerKey` to consider (repeatable) |
 | `--wasm-hash <HEX>` | Contract code hash (64 hex chars); needed when the instance is archived and the hash cannot be resolved |
 | `--submit` | Sign and submit (requires `--signer-secret`) |
+| `--dry-run` | Resolve and plan without signing, submitting or writing envelopes |
 | `--out <PATH>` | Write the unsigned envelope to a file |
 | `--json` | Emit a JSON report |
 
-Exit codes: `0` success, `1` runtime failure, `2` usage error.
+Exit codes: `0` success, `1` runtime failure, `2` usage error, `3` `--dry-run`
+found nothing archived. `--dry-run` cannot be combined with `--submit`.
 
 ## Batch mode
 
@@ -97,6 +99,19 @@ The planner instead:
 
 The entries that appeared in the simulation's read-write footprint are the ones
 reported as `archived`.
+
+## JSON output
+
+The `--json` shape is a **stable contract**: fields may be added, but existing
+names and types will not change without a major version bump. A unit test in
+`src/main.rs` asserts the top-level keys of both the single-contract report and
+the batch result, so an internal refactor cannot silently alter the schema.
+
+- Single mode: one `Report` object (`contract`, `current_ledger`, `candidates`,
+  `archived`, `min_resource_fee`, `unsigned_transaction_xdr`,
+  `submitted_tx_hash`).
+- Batch mode: an array of `{ contract, ok, report?, error? }`; `report` and
+  `error` are omitted when absent.
 
 ## Output
 

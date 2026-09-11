@@ -55,14 +55,19 @@ OPTIONS:
     --wasm-hash <HEX>            Contract code hash (64 hex chars) to include
                                  when the instance entry is archived
     --submit                     Sign (requires --signer-secret) and submit
+    --dry-run                    Resolve and plan without signing, submitting
+                                 or writing envelopes
     --out <PATH>                 File (single) or directory (batch) for the
                                  unsigned envelope(s)
     --json                       Emit a JSON report
     -h, --help                   Print this help and exit
 
 In batch mode the run continues past failures and exits non-zero if any
-contract failed.
+contract failed. With --dry-run, exit code 3 means nothing was archived.
 ";
+
+/// Exit code for `--dry-run` when no candidate entry is archived.
+const EXIT_NOTHING_TO_RESTORE: u8 = 3;
 
 #[derive(Default)]
 struct Args {
@@ -75,6 +80,7 @@ struct Args {
     keys: Vec<String>,
     wasm_hash: Option<String>,
     submit: bool,
+    dry_run: bool,
     out: Option<String>,
     json: bool,
 }
@@ -105,6 +111,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--wasm-hash" => args.wasm_hash = Some(value_of(&mut i)?),
             "--out" => args.out = Some(value_of(&mut i)?),
             "--submit" => args.submit = true,
+            "--dry-run" => args.dry_run = true,
             "--json" => args.json = true,
             other => return Err(format!("unknown argument `{other}`")),
         }
@@ -118,6 +125,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     }
     if let Ok(v) = std::env::var("SOROBAN_SIGNER_SECRET") {
         args.signer_secret.get_or_insert(v);
+    }
+    if args.dry_run && args.submit {
+        return Err("--dry-run cannot be combined with --submit".to_string());
     }
     Ok(args)
 }
@@ -304,6 +314,9 @@ fn run_batch(args: &Args) -> Result<Vec<BatchResult>, String> {
         .clone()
         .unwrap_or(config.network_passphrase);
     let signer_secret = args.signer_secret.clone().or(config.signer_secret);
+    if args.dry_run && (args.submit || config.submit) {
+        return Err("--dry-run cannot be combined with submit".to_string());
+    }
     let submit = args.submit || config.submit;
     let source = resolve_source(
         signer_secret.as_deref(),
@@ -421,7 +434,9 @@ fn main() -> ExitCode {
 
     match run_single(&args) {
         Ok(report) => {
-            if let Some(out) = &args.out {
+            if args.dry_run {
+                eprintln!("dry run: nothing signed, submitted or written");
+            } else if let Some(out) = &args.out {
                 if let Err(e) = std::fs::write(out, &report.unsigned_transaction_xdr) {
                     eprintln!("error: cannot write {out}: {e}");
                     return ExitCode::FAILURE;
@@ -439,6 +454,9 @@ fn main() -> ExitCode {
             } else {
                 print_report(&report);
             }
+            if args.dry_run && report.archived.is_empty() {
+                return ExitCode::from(EXIT_NOTHING_TO_RESTORE);
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -446,6 +464,15 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Total archived entries across a batch run.
+fn total_archived(results: &[BatchResult]) -> usize {
+    results
+        .iter()
+        .filter_map(|r| r.report.as_ref())
+        .map(|r| r.archived.len())
+        .sum()
 }
 
 fn run_batch_main(args: &Args) -> ExitCode {
@@ -457,7 +484,9 @@ fn run_batch_main(args: &Args) -> ExitCode {
         }
     };
 
-    if let Some(out) = &args.out {
+    if args.dry_run {
+        eprintln!("dry run: nothing signed, submitted or written");
+    } else if let Some(out) = &args.out {
         if let Err(e) = write_batch_envelopes(out, &results) {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
@@ -495,7 +524,84 @@ fn run_batch_main(args: &Args) -> ExitCode {
 
     if results.iter().any(|r| !r.ok) {
         ExitCode::FAILURE
+    } else if args.dry_run && total_archived(&results) == 0 {
+        ExitCode::from(EXIT_NOTHING_TO_RESTORE)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report() -> Report {
+        Report {
+            contract: "C...".to_string(),
+            current_ledger: 1,
+            candidates: Vec::new(),
+            archived: Vec::new(),
+            min_resource_fee: 0,
+            unsigned_transaction_xdr: String::new(),
+            submitted_tx_hash: None,
+        }
+    }
+
+    /// The JSON report shape is a documented contract; this pins the top-level
+    /// keys so an internal refactor cannot silently change it.
+    #[test]
+    fn report_json_shape_is_stable() {
+        let value = serde_json::to_value(report()).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "archived",
+                "candidates",
+                "contract",
+                "current_ledger",
+                "min_resource_fee",
+                "submitted_tx_hash",
+                "unsigned_transaction_xdr",
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_result_is_tagged_and_omits_absent_fields() {
+        let value = serde_json::to_value(BatchResult {
+            contract: "C...".to_string(),
+            ok: false,
+            report: None,
+            error: Some("boom".to_string()),
+        })
+        .unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(obj.contains_key("contract") && obj.contains_key("ok"));
+        assert!(obj.contains_key("error"));
+        assert!(!obj.contains_key("report"));
+    }
+
+    #[test]
+    fn dry_run_cannot_combine_with_submit() {
+        let argv = vec!["--dry-run".to_string(), "--submit".to_string()];
+        assert!(parse_args(&argv).is_err());
+    }
+
+    #[test]
+    fn total_archived_sums_reports() {
+        let results = vec![BatchResult {
+            contract: "C...".to_string(),
+            ok: true,
+            report: Some(report()),
+            error: None,
+        }];
+        assert_eq!(total_archived(&results), 0);
     }
 }
