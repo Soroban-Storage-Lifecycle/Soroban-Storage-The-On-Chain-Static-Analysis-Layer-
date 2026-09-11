@@ -1,5 +1,7 @@
 //! `soroban-restore-planner` — plan (and optionally submit) a
-//! `RestoreFootprintOp` for an archived Soroban contract.
+//! `RestoreFootprintOp` for archived Soroban contract state.
+//!
+//! Single contract:
 //!
 //! ```text
 //! soroban-restore-planner --contract C... --source G... \
@@ -7,49 +9,65 @@
 //!     --network-passphrase "Test SDF Network ; September 2015"
 //! ```
 //!
+//! Batch mode restores every contract listed in a config file:
+//!
+//! ```text
+//! soroban-restore-planner --config contracts.json
+//! ```
+//!
 //! See `docs/restore-planner.md` for the full reference.
 
 use std::process::ExitCode;
 
-use serde::Serialize;
-use soroban_restore_planner::keys::{
-    contract_code_key, contract_instance_key, decode_account_id, decode_contract_id,
-    decode_ledger_key, encode_ledger_key,
-};
+use serde::{Deserialize, Serialize};
+use soroban_restore_planner::keys::{decode_account_id, decode_contract_id};
 use soroban_restore_planner::plan::Candidate;
 use soroban_restore_planner::planner::Planner;
 use soroban_restore_planner::stellar::{self, StellarRpc};
 use soroban_restore_planner::Rpc;
+use stellar_xdr::AccountId;
 
 const HELP: &str = "\
 soroban-restore-planner — emit a RestoreFootprintOp for archived contract state
 
 USAGE:
     soroban-restore-planner --contract <C...> [OPTIONS]
+    soroban-restore-planner --config <file.json> [OPTIONS]
 
-REQUIRED:
+REQUIRED (single contract mode):
     --contract <C...>            Contract id to restore
     --network-passphrase <PASS>  Network passphrase (or SOROBAN_NETWORK_PASSPHRASE)
     --rpc-url <URL>              Stellar RPC endpoint (or SOROBAN_RPC_URL)
-    --source <G...>              Transaction source account (or derived from
-                                 --signer-secret)
+    --source <G...>              Transaction source account, or derive it from
+                                 --signer-secret
+
+BATCH MODE:
+    --config <file.json>         Restore every contract in the config file. The
+                                 file carries rpc_url, network_passphrase,
+                                 source/signer_secret, submit and contracts[].
+                                 Flags below override the file when present.
 
 OPTIONS:
     --signer-secret <S...>       Secret key used to sign with --submit
                                  (or SOROBAN_SIGNER_SECRET)
     --key <BASE64_XDR>           Extra contract-data LedgerKey to consider
-                                 (repeatable)
+                                 (repeatable; single contract mode)
     --wasm-hash <HEX>            Contract code hash (64 hex chars) to include
                                  when the instance entry is archived
     --submit                     Sign (requires --signer-secret) and submit
-    --out <PATH>                 Write the unsigned envelope to a file
+    --out <PATH>                 File (single) or directory (batch) for the
+                                 unsigned envelope(s)
     --json                       Emit a JSON report
     -h, --help                   Print this help and exit
+
+In batch mode the run continues past failures and exits non-zero if any
+contract failed.
 ";
 
 #[derive(Default)]
 struct Args {
     contract: Option<String>,
+    config: Option<String>,
     rpc_url: Option<String>,
     network_passphrase: Option<String>,
     source: Option<String>,
@@ -78,6 +96,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                 std::process::exit(0);
             }
             "--contract" => args.contract = Some(value_of(&mut i)?),
+            "--config" => args.config = Some(value_of(&mut i)?),
             "--rpc-url" => args.rpc_url = Some(value_of(&mut i)?),
             "--network-passphrase" => args.network_passphrase = Some(value_of(&mut i)?),
             "--source" => args.source = Some(value_of(&mut i)?),
@@ -115,6 +134,10 @@ fn decode_hex32(input: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+
 #[derive(Serialize)]
 struct EntryReport {
     label: String,
@@ -141,7 +164,87 @@ struct Report {
     submitted_tx_hash: Option<String>,
 }
 
-fn run(args: &Args) -> Result<Report, String> {
+#[derive(Serialize)]
+struct BatchResult {
+    contract: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report: Option<Report>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Batch config
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct BatchConfig {
+    rpc_url: String,
+    network_passphrase: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    signer_secret: Option<String>,
+    #[serde(default)]
+    submit: bool,
+    contracts: Vec<BatchContract>,
+}
+
+#[derive(Deserialize)]
+struct BatchContract {
+    contract_id: String,
+    #[serde(default)]
+    keys: Vec<String>,
+    #[serde(default)]
+    wasm_hash: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Shared planning
+// ---------------------------------------------------------------------------
+
+fn note_if_unresolved_code(contract: &str, candidates: &[Candidate]) {
+    if !candidates.iter().any(|c| c.label == "code") {
+        eprintln!(
+            "note: {contract}: could not resolve the contract code hash \
+             (instance archived?); pass a wasm_hash to include the code entry"
+        );
+    }
+}
+
+async fn plan_contract<R: Rpc>(
+    planner: &Planner<R>,
+    contract: &str,
+    candidates: Vec<Candidate>,
+    signer_secret: Option<&str>,
+    passphrase: &str,
+    submit: bool,
+) -> Result<Report, String> {
+    let planned = planner.plan(candidates).await?;
+    let submitted_tx_hash = if submit {
+        let secret = signer_secret.ok_or("--submit requires --signer-secret")?;
+        let signed = stellar::sign_envelope(&planned.transaction, secret, passphrase)?;
+        Some(planner.submit(&signed).await?)
+    } else {
+        None
+    };
+    Ok(Report {
+        contract: contract.to_string(),
+        current_ledger: planned.current_ledger,
+        candidates: planned.candidates.iter().map(EntryReport::from).collect(),
+        archived: planned.archived.iter().map(EntryReport::from).collect(),
+        min_resource_fee: planned.min_resource_fee,
+        unsigned_transaction_xdr: planned.unsigned_xdr,
+        submitted_tx_hash,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Single contract mode
+// ---------------------------------------------------------------------------
+
+fn run_single(args: &Args) -> Result<Report, String> {
     let contract = args.contract.clone().ok_or("--contract is required")?;
     let rpc_url = args.rpc_url.clone().ok_or("--rpc-url is required")?;
     let passphrase = args
@@ -154,77 +257,122 @@ fn run(args: &Args) -> Result<Report, String> {
     let wasm_hash = args.wasm_hash.clone();
 
     let contract_id = decode_contract_id(&contract)?;
-
-    let source = match &signer_secret {
-        Some(secret) => stellar::account_from_secret(secret)?,
-        None => {
-            let source = args.source.as_deref().ok_or("--source is required")?;
-            decode_account_id(source)?
-        }
-    };
+    let source = resolve_source(signer_secret.as_deref(), args.source.as_deref())?;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     runtime.block_on(async move {
         let rpc = StellarRpc::new(&rpc_url)?;
         rpc.verify_network(&passphrase).await?;
-
-        // Candidate entries: the instance entry is always considered; the code
-        // entry is included when we can resolve its hash (from `--wasm-hash`,
-        // or from the live instance); explicit data keys are added verbatim.
-        let mut candidates = vec![Candidate {
-            label: "instance".to_string(),
-            key_xdr: encode_ledger_key(&contract_instance_key(contract_id))?,
-        }];
-        let resolved_hash = match &wasm_hash {
-            Some(hex) => Some(decode_hex32(hex)?),
-            None => rpc.fetch_wasm_hash(contract_id).await?,
-        };
-        if let Some(hash) = resolved_hash {
-            candidates.push(Candidate {
-                label: "code".to_string(),
-                key_xdr: encode_ledger_key(&contract_code_key(hash))?,
-            });
-        } else {
-            eprintln!(
-                "note: could not resolve the contract code hash (instance archived?); \
-                 pass --wasm-hash to include the code entry"
-            );
-        }
-        for (i, key) in keys.iter().enumerate() {
-            // Validate the user-provided key up front for a clear error.
-            decode_ledger_key(key)?;
-            candidates.push(Candidate {
-                label: format!("data:{i}"),
-                key_xdr: key.clone(),
-            });
-        }
-
         let planner = Planner::new(rpc, source);
-        let planned = planner.plan(candidates).await?;
 
-        let submitted_tx_hash = if submit {
-            let secret = signer_secret
-                .as_deref()
-                .ok_or("--submit requires --signer-secret")?;
-            let signed = stellar::sign_envelope(&planned.transaction, secret, &passphrase)?;
-            Some(planner.submit(&signed).await?)
-        } else {
-            None
+        let wasm = match &wasm_hash {
+            Some(hex) => Some(decode_hex32(hex)?),
+            None => None,
         };
-
-        Ok(Report {
-            contract: contract.clone(),
-            current_ledger: planned.current_ledger,
-            candidates: planned.candidates.iter().map(EntryReport::from).collect(),
-            archived: planned.archived.iter().map(EntryReport::from).collect(),
-            min_resource_fee: planned.min_resource_fee,
-            unsigned_transaction_xdr: planned.unsigned_xdr,
-            submitted_tx_hash,
-        })
+        let candidates = planner.candidates(contract_id, &keys, wasm).await?;
+        note_if_unresolved_code(&contract, &candidates);
+        plan_contract(
+            &planner,
+            &contract,
+            candidates,
+            signer_secret.as_deref(),
+            &passphrase,
+            submit,
+        )
+        .await
     })
 }
 
-fn print_human(report: &Report) {
+// ---------------------------------------------------------------------------
+// Batch mode
+// ---------------------------------------------------------------------------
+
+fn run_batch(args: &Args) -> Result<Vec<BatchResult>, String> {
+    let path = args.config.clone().ok_or("--config is required")?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("cannot read config {path}: {e}"))?;
+    let config: BatchConfig =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid config {path}: {e}"))?;
+    if config.contracts.is_empty() {
+        return Err(format!("config {path} lists no contracts"));
+    }
+
+    // Flags override the file when provided.
+    let rpc_url = args.rpc_url.clone().unwrap_or(config.rpc_url);
+    let passphrase = args
+        .network_passphrase
+        .clone()
+        .unwrap_or(config.network_passphrase);
+    let signer_secret = args.signer_secret.clone().or(config.signer_secret);
+    let submit = args.submit || config.submit;
+    let source = resolve_source(
+        signer_secret.as_deref(),
+        args.source.as_deref().or(config.source.as_deref()),
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    runtime.block_on(async move {
+        let rpc = StellarRpc::new(&rpc_url)?;
+        rpc.verify_network(&passphrase).await?;
+        let planner = Planner::new(rpc, source);
+
+        let mut results = Vec::new();
+        for contract in &config.contracts {
+            let outcome = async {
+                let id = decode_contract_id(&contract.contract_id)?;
+                let wasm = match &contract.wasm_hash {
+                    Some(hex) => Some(decode_hex32(hex)?),
+                    None => None,
+                };
+                let candidates = planner.candidates(id, &contract.keys, wasm).await?;
+                note_if_unresolved_code(&contract.contract_id, &candidates);
+                plan_contract(
+                    &planner,
+                    &contract.contract_id,
+                    candidates,
+                    signer_secret.as_deref(),
+                    &passphrase,
+                    submit,
+                )
+                .await
+            }
+            .await;
+
+            results.push(match outcome {
+                Ok(report) => BatchResult {
+                    contract: contract.contract_id.clone(),
+                    ok: true,
+                    report: Some(report),
+                    error: None,
+                },
+                Err(error) => BatchResult {
+                    contract: contract.contract_id.clone(),
+                    ok: false,
+                    report: None,
+                    error: Some(error),
+                },
+            });
+        }
+        Ok(results)
+    })
+}
+
+/// Resolves the transaction source: the signer secret wins when present.
+fn resolve_source(signer_secret: Option<&str>, source: Option<&str>) -> Result<AccountId, String> {
+    match signer_secret {
+        Some(secret) => stellar::account_from_secret(secret),
+        None => {
+            let source = source.ok_or("--source (or config source) is required")?;
+            decode_account_id(source)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+fn print_report(report: &Report) {
     println!("contract:        {}", report.contract);
     println!("current ledger:  {}", report.current_ledger);
     println!("candidates:      {}", report.candidates.len());
@@ -241,6 +389,22 @@ fn print_human(report: &Report) {
     }
 }
 
+fn write_batch_envelopes(dir: &str, results: &[BatchResult]) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {dir}: {e}"))?;
+    for result in results {
+        if let Some(report) = &result.report {
+            if report.submitted_tx_hash.is_some() {
+                continue;
+            }
+            let path = std::path::Path::new(dir).join(format!("{}.xdr", result.contract));
+            std::fs::write(&path, &report.unsigned_transaction_xdr)
+                .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            eprintln!("wrote {}", path.display());
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse_args(&argv) {
@@ -251,7 +415,11 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&args) {
+    if args.config.is_some() {
+        return run_batch_main(&args);
+    }
+
+    match run_single(&args) {
         Ok(report) => {
             if let Some(out) = &args.out {
                 if let Err(e) = std::fs::write(out, &report.unsigned_transaction_xdr) {
@@ -269,7 +437,7 @@ fn main() -> ExitCode {
                     }
                 }
             } else {
-                print_human(&report);
+                print_report(&report);
             }
             ExitCode::SUCCESS
         }
@@ -277,5 +445,57 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run_batch_main(args: &Args) -> ExitCode {
+    let results = match run_batch(args) {
+        Ok(results) => results,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Some(out) = &args.out {
+        if let Err(e) = write_batch_envelopes(out, &results) {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    if args.json {
+        match serde_json::to_string_pretty(&results) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                eprintln!("error: cannot serialize report: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        for result in &results {
+            match (&result.report, &result.error) {
+                (Some(report), _) => print_report(report),
+                (None, Some(error)) => {
+                    eprintln!("contract:        {}", result.contract);
+                    eprintln!("error:           {error}");
+                }
+                (None, None) => {}
+            }
+            println!();
+        }
+        let failed = results.iter().filter(|r| !r.ok).count();
+        println!(
+            "{} contract(s): {} ok, {} failed",
+            results.len(),
+            results.len() - failed,
+            failed
+        );
+    }
+
+    if results.iter().any(|r| !r.ok) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }

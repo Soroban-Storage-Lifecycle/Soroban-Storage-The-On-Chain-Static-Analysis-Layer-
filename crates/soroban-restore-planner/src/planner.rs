@@ -21,6 +21,46 @@ impl<R: Rpc> Planner<R> {
         Planner { rpc, source }
     }
 
+    /// Resolves the candidate entries for a contract: the instance key, the
+    /// code key (when `wasm_hash` is supplied or resolvable from the live
+    /// instance), and any explicit data keys.
+    ///
+    /// Explicit data keys are validated as decodable `LedgerKey`s before being
+    /// added, so a typo surfaces as an error rather than a failed simulation.
+    pub async fn candidates(
+        &self,
+        contract_id: [u8; 32],
+        keys: &[String],
+        wasm_hash: Option<[u8; 32]>,
+    ) -> Result<Vec<Candidate>, String> {
+        use crate::keys::{
+            contract_code_key, contract_instance_key, decode_ledger_key, encode_ledger_key,
+        };
+
+        let mut candidates = vec![Candidate {
+            label: "instance".to_string(),
+            key_xdr: encode_ledger_key(&contract_instance_key(contract_id))?,
+        }];
+        let resolved = match wasm_hash {
+            Some(hash) => Some(hash),
+            None => self.rpc.fetch_wasm_hash(contract_id).await?,
+        };
+        if let Some(hash) = resolved {
+            candidates.push(Candidate {
+                label: "code".to_string(),
+                key_xdr: encode_ledger_key(&contract_code_key(hash))?,
+            });
+        }
+        for (i, key) in keys.iter().enumerate() {
+            decode_ledger_key(key)?;
+            candidates.push(Candidate {
+                label: format!("data:{i}"),
+                key_xdr: key.clone(),
+            });
+        }
+        Ok(candidates)
+    }
+
     /// Plans the restoration of `candidates`: probes the network with a
     /// `RestoreFootprintOp` carrying the candidate footprint, then rebuilds the
     /// transaction from the simulated resource data.

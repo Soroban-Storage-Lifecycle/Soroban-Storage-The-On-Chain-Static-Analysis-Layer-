@@ -144,3 +144,26 @@ fn footprint_places_candidates_in_read_write() {
     assert_eq!(footprint.read_write.len(), 2);
     assert!(footprint.read_only.is_empty());
 }
+
+#[tokio::test]
+async fn candidates_include_instance_code_and_data() {
+    let planner = Planner::new(FakeRpc::new(Vec::new()), account());
+    // Any decodable LedgerKey stands in for a contract-data entry.
+    let data = encode_ledger_key(&contract_code_key([8u8; 32])).unwrap();
+    let resolved = planner.candidates([1u8; 32], &[data], None).await.unwrap();
+    let labels: Vec<&str> = resolved.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, vec!["instance", "code", "data:0"]);
+}
+
+#[tokio::test]
+async fn candidates_reject_invalid_data_keys() {
+    let planner = Planner::new(FakeRpc::new(Vec::new()), account());
+    let err = planner
+        .candidates([1u8; 32], &["not-base64".to_string()], None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("invalid ledger key"),
+        "unexpected error: {err}"
+    );
+}
