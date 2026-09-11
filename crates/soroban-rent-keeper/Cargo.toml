@@ -14,12 +14,10 @@ name = "soroban-rent-keeper"
 path = "src/main.rs"
 
 [dependencies]
-ed25519-dalek = "2"
 prometheus = "0.13"
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
 serde_json = "1"
+soroban-stellar-common.workspace = true
 stellar-rpc-client = "27.0.0"
-stellar-strkey = "0.0.16"
 stellar-xdr = { version = "27.0.0", features = ["base64", "std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
