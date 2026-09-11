@@ -116,6 +116,7 @@ Served as Prometheus text format on `http://<metrics_addr>/metrics`:
 | `soroban_rent_keeper_entries_watched` | `contract` | entries watched per contract |
 | `soroban_rent_keeper_retries_total` | `contract` | transient RPC failures retried with backoff |
 | `soroban_rent_keeper_poll_errors_total` | `contract` | poll cycles that failed after exhausting retries |
+| `soroban_rent_keeper_signer_balance_stroops` | — | signer balance, refreshed each poll |
 
 Alert on `extensions_total{outcome="error"}` and on
 `ttl_ledgers` approaching zero (the keeper should have refreshed it long
@@ -164,7 +165,10 @@ policy target.
   set `allow_short_threshold: true` only if you have an out-of-band reason.
 - **Signer balance floor.** The daemon checks the signer's balance at startup
   and refuses to run below `min_signer_balance_stroops` (default 1 XLM), rather
-  than ticking along reporting `error` metrics while entries expire.
+  than ticking along reporting `error` metrics while entries expire. The
+  balance is also exported as `soroban_rent_keeper_signer_balance_stroops` on
+  every poll, so alert on it trending toward the floor before extensions start
+  failing.
 - **The network layer is not live-tested.** The build/simulate/sign/submit
   flow follows the documented pattern but has only been exercised against
   fakes. Verify one extension on testnet before trusting it with mainnet

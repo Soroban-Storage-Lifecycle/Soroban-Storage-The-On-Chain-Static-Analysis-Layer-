@@ -30,6 +30,10 @@ impl Rpc for FakeRpc {
         Ok(self.current_ledger)
     }
 
+    async fn signer_balance_stroops(&self) -> Result<i64, String> {
+        Ok(10_000_000)
+    }
+
     async fn fetch_entries(&self, keys: &[WatchKey]) -> Result<Vec<EntrySnapshot>, String> {
         let wanted: std::collections::HashSet<&str> =
             keys.iter().map(|k| k.key_xdr.as_str()).collect();
@@ -118,6 +122,21 @@ async fn oversized_batches_are_split() {
 }
 
 #[tokio::test]
+async fn signer_balance_is_exported_each_poll() {
+    let rpc = FakeRpc::new(vec![snapshot("a", 500_000, 300)]);
+    let metrics = Metrics::new();
+    let keeper = Keeper::new(rpc, vec![watch(&["a"])], metrics.clone(), 1_000_000);
+
+    keeper.poll_once().await;
+    let text = metrics.gather_text();
+    assert!(
+        text.contains("soroban_rent_keeper_signer_balance_stroops"),
+        "balance gauge missing from exposition: {text}"
+    );
+    assert!(text.contains("10000000"), "balance value missing: {text}");
+}
+
+#[tokio::test]
 async fn a_watch_with_no_live_entries_is_a_noop() {
     let rpc = FakeRpc::new(vec![]);
     let keeper = Keeper::new(rpc, vec![watch(&["a"])], Metrics::new(), 1_000_000);
@@ -138,6 +157,10 @@ struct FailingRpc {
 impl Rpc for FailingRpc {
     async fn latest_ledger(&self) -> Result<u32, String> {
         Ok(1_000)
+    }
+
+    async fn signer_balance_stroops(&self) -> Result<i64, String> {
+        Ok(10_000_000)
     }
 
     async fn fetch_entries(&self, _keys: &[WatchKey]) -> Result<Vec<EntrySnapshot>, String> {

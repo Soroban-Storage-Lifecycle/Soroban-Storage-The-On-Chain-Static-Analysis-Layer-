@@ -16,6 +16,7 @@ use soroban_rent_keeper::keeper::Keeper;
 use soroban_rent_keeper::metrics;
 use soroban_rent_keeper::risk;
 use soroban_rent_keeper::stellar::StellarRpc;
+use soroban_rent_keeper::Rpc;
 
 fn help() -> &'static str {
     "\

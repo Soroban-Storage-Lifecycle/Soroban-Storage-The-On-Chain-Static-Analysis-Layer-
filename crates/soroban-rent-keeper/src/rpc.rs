@@ -42,6 +42,10 @@ pub trait Rpc: Send + Sync {
     /// The current ledger sequence number.
     async fn latest_ledger(&self) -> Result<u32, String>;
 
+    /// The signer account's current balance, in stroops, so the keeper can
+    /// export it as a gauge on every poll.
+    async fn signer_balance_stroops(&self) -> Result<i64, String>;
+
     /// Fetches the entries for the given ledger keys, returning snapshots with
     /// the corresponding labels (missing keys are skipped).
     async fn fetch_entries(&self, keys: &[WatchKey]) -> Result<Vec<EntrySnapshot>, String>;
