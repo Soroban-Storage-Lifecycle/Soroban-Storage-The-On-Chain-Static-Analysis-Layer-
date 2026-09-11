@@ -109,6 +109,34 @@ Alert on `extensions_total{outcome="error"}` and on
 `ttl_ledgers` approaching zero (the keeper should have refreshed it long
 before then).
 
+## Verifying on testnet
+
+The suite ships opt-in smoke tests that self-skip (and pass) unless all of
+these are set:
+
+| Variable | Purpose |
+|---|---|
+| `SOROBAN_RPC_URL` | RPC endpoint |
+| `SOROBAN_NETWORK_PASSPHRASE` | Network passphrase |
+| `SOROBAN_SIGNER_SECRET` | Funded `S...` account |
+| `SOROBAN_TEST_CONTRACT` | A deployed `C...` contract to watch |
+| `SOROBAN_TESTNET_WRITE` | Set to `1` to allow the fee-spending extend test |
+
+```bash
+export SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
+export SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+export SOROBAN_SIGNER_SECRET=S...
+export SOROBAN_TEST_CONTRACT=C...
+cargo test -p soroban-rent-keeper --test testnet_smoke
+```
+
+`testnet_read_smoke` verifies the passphrase, resolves the watch keys and
+prints each entry's TTL. `testnet_extend_smoke` forces one
+`ExtendFootprintTTLOp` and submits it, and only runs when
+`SOROBAN_TESTNET_WRITE=1` — no funds are spent by accident. Confirm success by
+re-running the read test and seeing the extended entries sit near the 30-day
+policy target.
+
 ## Operational notes
 
 - **Fund the signer.** Extensions cost the resource fee reported by
