@@ -16,6 +16,10 @@ use crate::parse::{FileModel, FnStorage, Lifecycle, StorageChain};
 /// days at ~5s ledgers). Kept local so the linter stays dependency-free.
 pub const MAX_TEMP_TTL: u32 = 3_110_400;
 
+/// Maximum TTL a persistent (or instance) entry can be extended to (network
+/// parameter, ~1 year at ~5s ledgers), kept local for the same reason.
+pub const MAX_PERSISTENT_TTL: u32 = 6_311_390;
+
 /// Instance structs with more fields than this are flagged when written to
 /// instance storage.
 pub const MAX_INSTANCE_STRUCT_FIELDS: usize = 3;
@@ -470,6 +474,47 @@ pub fn temporary_ttl_exceeded(model: &FileModel, out: &mut Vec<RuleFinding>) {
     }
 }
 
+/// R5 — `persistent_ttl_exceeded` (warning)
+///
+/// The same silent clamp as [`temporary_ttl_exceeded`], but for persistent and
+/// instance entries: the requested lifetime is not the effective lifetime, and
+/// the resource fee for the excess is wasted.
+pub fn persistent_ttl_exceeded(model: &FileModel, out: &mut Vec<RuleFinding>) {
+    for f in &model.fns {
+        for chain in &f.chains {
+            if !matches!(chain.lifecycle, Lifecycle::Persistent | Lifecycle::Instance)
+                || chain.method != "extend_ttl"
+            {
+                continue;
+            }
+            // `extend_ttl(key, threshold, extend_to)` — the target is arg 2.
+            let Some(Expr::Lit(lit)) = chain.args.get(2) else {
+                continue;
+            };
+            let syn::Lit::Int(int) = &lit.lit else {
+                continue;
+            };
+            let Ok(target) = int.base10_parse::<u32>() else {
+                continue;
+            };
+            if target > MAX_PERSISTENT_TTL {
+                out.push(RuleFinding {
+                    rule: "persistent_ttl_exceeded",
+                    severity: Severity::Warning,
+                    line: chain.line,
+                    column: chain.column,
+                    message: format!(
+                        "extending a {} entry to {target} ledgers exceeds the network \
+                         maximum ({MAX_PERSISTENT_TTL}); the host clamps silently, so the \
+                         effective lifetime is shorter than requested",
+                        chain.lifecycle.as_str()
+                    ),
+                });
+            }
+        }
+    }
+}
+
 type RuleFn = fn(&FileModel, &mut Vec<RuleFinding>);
 
 /// Runs every rule over the model, appending findings in a stable order.
@@ -484,6 +529,7 @@ pub fn run_all(
         ("missing_ttl_extension", missing_ttl_extension),
         ("instance_storage_bloat", instance_storage_bloat),
         ("temporary_ttl_exceeded", temporary_ttl_exceeded),
+        ("persistent_ttl_exceeded", persistent_ttl_exceeded),
     ];
     for (name, rule) in rules {
         if ignored.contains(name) {

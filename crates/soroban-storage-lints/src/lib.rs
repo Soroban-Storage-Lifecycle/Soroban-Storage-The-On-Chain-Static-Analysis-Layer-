@@ -11,8 +11,10 @@
 //!   the entry TTL, so entries drift toward eviction.
 //! - **R3 `instance_storage_bloat`** (warning): unbounded or loop-written
 //!   values in instance storage (a single ledger entry paid on every call).
-//! - **R4 `temporary_ttl_exceeded`** (warning): extensions beyond the network
-//!   maximum TTL, which the host silently clamps.
+//! - **R4 `temporary_ttl_exceeded`** (warning): temporary extensions beyond the
+//!   network maximum TTL, which the host silently clamps.
+//! - **R5 `persistent_ttl_exceeded`** (warning): the same clamp for persistent
+//!   and instance entries.
 //!
 //! The analyzer is syntactic (syn-based) on purpose: it runs in milliseconds on
 //! source without building the contract, like Slither for Solidity. The

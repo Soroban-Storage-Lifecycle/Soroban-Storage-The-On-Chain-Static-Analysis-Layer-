@@ -41,6 +41,7 @@ RULES:
     missing_ttl_extension     warning  write path without TTL extension
     instance_storage_bloat    warning  unbounded/looped instance storage
     temporary_ttl_exceeded    warning  temporary extension beyond network max
+    persistent_ttl_exceeded   warning  persistent/instance extension beyond max
 
 EXIT CODES:
     0    clean (or warnings only, without --deny-warnings)
