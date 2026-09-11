@@ -13,6 +13,8 @@ pub struct Metrics {
     extensions_total: IntCounterVec,
     last_poll_ledger: IntGaugeVec,
     entries_watched: IntGaugeVec,
+    retries_total: IntCounterVec,
+    poll_errors_total: IntCounterVec,
 }
 
 impl Metrics {
@@ -49,6 +51,22 @@ impl Metrics {
             &["contract"],
         )
         .unwrap();
+        let retries_total = IntCounterVec::new(
+            Opts::new(
+                "soroban_rent_keeper_retries_total",
+                "Transient RPC failures retried by backoff",
+            ),
+            &["contract"],
+        )
+        .unwrap();
+        let poll_errors_total = IntCounterVec::new(
+            Opts::new(
+                "soroban_rent_keeper_poll_errors_total",
+                "Poll cycles that failed after exhausting retries",
+            ),
+            &["contract"],
+        )
+        .unwrap();
         let registry = Registry::new();
         registry.register(Box::new(ttl_ledgers.clone())).unwrap();
         registry
@@ -60,12 +78,18 @@ impl Metrics {
         registry
             .register(Box::new(entries_watched.clone()))
             .unwrap();
+        registry.register(Box::new(retries_total.clone())).unwrap();
+        registry
+            .register(Box::new(poll_errors_total.clone()))
+            .unwrap();
         Metrics {
             registry,
             ttl_ledgers,
             extensions_total,
             last_poll_ledger,
             entries_watched,
+            retries_total,
+            poll_errors_total,
         }
     }
 
@@ -95,6 +119,16 @@ impl Metrics {
         self.entries_watched
             .with_label_values(&[contract])
             .set(count as i64);
+    }
+
+    /// Records one retried RPC failure for `contract` (or `global`).
+    pub fn inc_retry(&self, contract: &str) {
+        self.retries_total.with_label_values(&[contract]).inc();
+    }
+
+    /// Records a poll cycle that failed after exhausting its retries.
+    pub fn inc_poll_error(&self, contract: &str) {
+        self.poll_errors_total.with_label_values(&[contract]).inc();
     }
 
     /// The Prometheus text-format exposition of all metrics.

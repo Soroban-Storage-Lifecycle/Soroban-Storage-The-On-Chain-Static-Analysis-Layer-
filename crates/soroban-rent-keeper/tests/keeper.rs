@@ -1,8 +1,10 @@
 //! Integration tests for the keeper poll loop, driven by a fake [`Rpc`].
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
-use soroban_rent_keeper::keeper::{Keeper, WatchConfig};
+use soroban_rent_keeper::keeper::{Keeper, RetryPolicy, WatchConfig};
 use soroban_rent_keeper::metrics::Metrics;
 use soroban_rent_keeper::rpc::{EntrySnapshot, ExtendOutcome, Rpc, WatchKey};
 
@@ -124,4 +126,89 @@ async fn a_watch_with_no_live_entries_is_a_noop() {
     let report = reports[0].as_ref().unwrap();
     assert_eq!(report.checked, 0);
     assert_eq!(report.submitted, 0);
+}
+
+/// Fails `fetch_entries` with `error` until `remaining_failures` reaches zero.
+struct FailingRpc {
+    snapshots: Vec<EntrySnapshot>,
+    remaining_failures: AtomicUsize,
+    error: &'static str,
+}
+
+impl Rpc for FailingRpc {
+    async fn latest_ledger(&self) -> Result<u32, String> {
+        Ok(1_000)
+    }
+
+    async fn fetch_entries(&self, _keys: &[WatchKey]) -> Result<Vec<EntrySnapshot>, String> {
+        if self.remaining_failures.load(Ordering::SeqCst) > 0 {
+            self.remaining_failures.fetch_sub(1, Ordering::SeqCst);
+            return Err(self.error.to_string());
+        }
+        Ok(self.snapshots.clone())
+    }
+
+    async fn extend_entries(
+        &self,
+        _keys: &[String],
+        _extend_to: u32,
+    ) -> Result<ExtendOutcome, String> {
+        Ok(ExtendOutcome::Submitted {
+            tx_hash: "abc".to_string(),
+        })
+    }
+}
+
+fn fast_retry() -> RetryPolicy {
+    RetryPolicy {
+        max_attempts: 3,
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+    }
+}
+
+#[tokio::test]
+async fn transient_failures_are_retried() {
+    let rpc = FailingRpc {
+        snapshots: vec![snapshot("a", 100, 300)],
+        remaining_failures: AtomicUsize::new(2), // one try + two retries
+        error: "connection reset by peer",
+    };
+    let keeper = Keeper::new(rpc, vec![watch(&["a"])], Metrics::new(), 1_000_000)
+        .with_retry_policy(fast_retry());
+
+    let reports = keeper.poll_once().await;
+    let report = reports[0].as_ref().expect("poll recovers after retries");
+    assert_eq!(report.submitted, 1);
+}
+
+#[tokio::test]
+async fn permanent_failures_surface_without_retrying() {
+    let rpc = FailingRpc {
+        snapshots: vec![snapshot("a", 100, 300)],
+        remaining_failures: AtomicUsize::new(3),
+        error: "simulation failed: invalid footprint",
+    };
+    let keeper = Keeper::new(rpc, vec![watch(&["a"])], Metrics::new(), 1_000_000)
+        .with_retry_policy(fast_retry());
+
+    let reports = keeper.poll_once().await;
+    assert!(reports[0].is_err(), "permanent errors must not be masked");
+}
+
+#[tokio::test]
+async fn retries_are_exhausted_for_transient_errors() {
+    let rpc = FailingRpc {
+        snapshots: vec![snapshot("a", 100, 300)],
+        remaining_failures: AtomicUsize::new(99),
+        error: "connection timeout",
+    };
+    let keeper = Keeper::new(rpc, vec![watch(&["a"])], Metrics::new(), 1_000_000)
+        .with_retry_policy(fast_retry());
+
+    let reports = keeper.poll_once().await;
+    assert!(
+        reports[0].is_err(),
+        "a permanently unreachable RPC eventually fails"
+    );
 }

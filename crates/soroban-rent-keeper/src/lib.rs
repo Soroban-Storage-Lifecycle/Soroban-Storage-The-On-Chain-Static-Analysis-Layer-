@@ -32,5 +32,5 @@ pub mod risk;
 pub mod rpc;
 pub mod stellar;
 
-pub use keeper::Keeper;
+pub use keeper::{Keeper, RetryPolicy};
 pub use rpc::Rpc;

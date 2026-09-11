@@ -28,6 +28,16 @@ The pure risk/batching logic lives in [`crates/soroban-rent-keeper/src/risk.rs`]
 and is unit-tested; the network layer is behind the `Rpc` trait so the poll
 loop is tested against fakes.
 
+### Retries
+
+Every RPC call goes through a bounded-retry wrapper. Errors that look
+transient (`timeout`, `connection`, `unavailable`, `429`, `502`/`503`/`504`,
+rate limits, resets) are retried with exponential backoff — default three
+attempts total, 200 ms doubling to a 5 s cap — while anything else surfaces
+immediately so a broken footprint fails fast instead of spinning. Retries and
+exhausted polls are counted in `retries_total` and `poll_errors_total`, which
+is what lets an alert distinguish a flaky RPC from a broken keeper.
+
 ### Risk windows
 
 | Level | Condition | Meaning |
@@ -104,6 +114,8 @@ Served as Prometheus text format on `http://<metrics_addr>/metrics`:
 | `soroban_rent_keeper_extensions_total` | `contract`, `outcome` | submissions by outcome (`submitted`/`noop`/`error`) |
 | `soroban_rent_keeper_last_poll_timestamp` | `contract` | unix time of the last poll |
 | `soroban_rent_keeper_entries_watched` | `contract` | entries watched per contract |
+| `soroban_rent_keeper_retries_total` | `contract` | transient RPC failures retried with backoff |
+| `soroban_rent_keeper_poll_errors_total` | `contract` | poll cycles that failed after exhausting retries |
 
 Alert on `extensions_total{outcome="error"}` and on
 `ttl_ledgers` approaching zero (the keeper should have refreshed it long
