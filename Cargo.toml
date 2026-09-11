@@ -4,6 +4,8 @@ members = [
     "crates/soroban-storage",
     "crates/soroban-storage-macros",
     "crates/soroban-storage-lints",
+    "crates/soroban-rent-keeper",
+    "crates/soroban-restore-planner",
     "crates/example-contract",
 ]
 
@@ -12,13 +14,13 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.81"
 license = "MIT"
-repository = "https://github.com/stellar/soroban-storage"
+repository = "https://github.com/Soroban-Storage-Lifecycle/Soroban-Storage-The-On-Chain-Static-Analysis-Layer-"
 description = "Safe storage lifecycle framework for Soroban smart contracts: explicit lifecycle declarations, auto-bump TTLs on access, and compile-time protection for critical data."
 
 [workspace.dependencies]
 soroban-sdk = "27.0.6"
-soroban-storage = { path = "crates/soroban-storage" }
-soroban-storage-macros = { path = "crates/soroban-storage-macros" }
+soroban-storage = { version = "0.1.0", path = "crates/soroban-storage" }
+soroban-storage-macros = { version = "0.1.0", path = "crates/soroban-storage-macros" }
 
 [profile.release]
 opt-level = "s"

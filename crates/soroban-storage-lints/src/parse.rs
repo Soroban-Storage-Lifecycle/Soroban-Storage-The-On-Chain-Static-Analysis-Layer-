@@ -87,6 +87,8 @@ pub struct FnStorage {
     /// Parameter bindings (`name -> type`) scoped to this function, so value
     /// resolution never leaks across functions with the same parameter names.
     pub bindings: HashMap<String, String>,
+    /// The `Self` type when the function lives in an `impl` block.
+    pub self_type: Option<String>,
 }
 
 /// The full storage model of one source file.
@@ -100,6 +102,9 @@ pub struct FileModel {
     pub critical_types: HashSet<String>,
     /// Struct name -> number of fields.
     pub struct_field_counts: HashMap<String, usize>,
+    /// Struct name -> (field name -> field type), for resolving `self.field`
+    /// and `value.field` expressions.
+    pub struct_field_types: HashMap<String, HashMap<String, String>>,
     /// Best-effort `let name: Type` / parameter bindings, normalized.
     pub bindings: HashMap<String, String>,
 }
@@ -150,6 +155,15 @@ pub fn scan_file(file: &File) -> FileModel {
                 model
                     .struct_field_counts
                     .insert(s.ident.to_string(), s.fields.len());
+                let mut fields = HashMap::new();
+                if let syn::Fields::Named(named) = &s.fields {
+                    for f in &named.named {
+                        if let Some(ident) = &f.ident {
+                            fields.insert(ident.to_string(), type_string(&f.ty));
+                        }
+                    }
+                }
+                model.struct_field_types.insert(s.ident.to_string(), fields);
                 if derives_critical(&s.attrs) {
                     model.critical_types.insert(s.ident.to_string());
                 }
@@ -203,14 +217,17 @@ pub fn scan_file(file: &File) -> FileModel {
             Item::Fn(f) => {
                 let mut bindings = HashMap::new();
                 collect_bindings(&f.sig, &f.block, &mut bindings);
-                model.fns.push(scan_fn(&f.block, bindings));
+                model.fns.push(scan_fn(&f.block, bindings, None));
             }
             Item::Impl(imp) => {
+                let self_type = type_path_last(&imp.self_ty);
                 for it in &imp.items {
                     if let ImplItem::Fn(f) = it {
                         let mut bindings = HashMap::new();
                         collect_bindings(&f.sig, &f.block, &mut bindings);
-                        model.fns.push(scan_fn(&f.block, bindings));
+                        model
+                            .fns
+                            .push(scan_fn(&f.block, bindings, self_type.clone()));
                     }
                 }
             }
@@ -239,7 +256,20 @@ fn collect_bindings(sig: &syn::Signature, body: &syn::Block, out: &mut HashMap<S
     }
 }
 
-fn scan_fn(block: &syn::Block, bindings: HashMap<String, String>) -> FnStorage {
+/// Last path segment of a type, e.g. `soroban_sdk::Address` -> `Address`.
+pub fn type_path_last(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => tp.path.segments.last().map(|s| s.ident.to_string()),
+        syn::Type::Reference(r) => type_path_last(&r.elem),
+        _ => None,
+    }
+}
+
+fn scan_fn(
+    block: &syn::Block,
+    bindings: HashMap<String, String>,
+    self_type: Option<String>,
+) -> FnStorage {
     let mut visitor = FnVisitor {
         chains: Vec::new(),
         has_ttl_call: false,
@@ -250,6 +280,7 @@ fn scan_fn(block: &syn::Block, bindings: HashMap<String, String>) -> FnStorage {
         chains: visitor.chains,
         has_ttl_call: visitor.has_ttl_call,
         bindings,
+        self_type,
     }
 }
 

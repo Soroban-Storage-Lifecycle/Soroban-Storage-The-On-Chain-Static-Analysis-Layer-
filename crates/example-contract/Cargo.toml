@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Example Soroban contract (vault with grants) built on soroban-storage."
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

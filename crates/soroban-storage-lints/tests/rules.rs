@@ -108,6 +108,28 @@ fn instance_bloat_is_flagged() {
 }
 
 #[test]
+fn type_aware_resolution_is_flagged() {
+    let findings = lint_fixture("hardening.rs");
+    // 4 critical-value cases: self field, struct literal, map element, index.
+    assert_has(&findings, "temporary_critical_type", Severity::Error);
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|f| f.rule == "temporary_critical_type")
+            .count(),
+        4,
+        "self-field, struct literal, map element and index cases must all be flagged"
+    );
+    // The `Price` negative control stays quiet.
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.snippet.contains("write_price_to_temp")),
+        "non-critical `Price` value must not be flagged"
+    );
+}
+
+#[test]
 fn temp_ttl_exceeded_is_flagged() {
     let findings = lint_fixture("temp_ttl_exceeded.rs");
     assert_has(&findings, "temporary_ttl_exceeded", Severity::Warning);

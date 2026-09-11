@@ -1,0 +1,16 @@
+{
+  "rpc_url": "https://soroban-testnet.stellar.org",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "signer_secret": "S...",
+  "metrics_addr": "127.0.0.1:9090",
+  "max_batch_bytes": 200000,
+  "poll_interval_secs": 600,
+  "contracts": [
+    {
+      "contract_id": "C...",
+      "threshold_ledgers": 172800,
+      "extend_to_ledgers": 518400,
+      "data_keys": []
+    }
+  ]
+}

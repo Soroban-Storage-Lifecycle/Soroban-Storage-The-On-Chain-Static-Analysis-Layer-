@@ -1,0 +1,13 @@
+error: critical entry declared `temporary`: temporary entries are permanently deleted when their TTL expires and can never be restored. Use `persistent` (or `instance`) for data that cannot be recreated.
+ --> tests/ui/critical_temporary.rs:7:5
+  |
+7 |     Balance(Address) -> i128,
+  |     ^^^^^^^
+
+warning: unused import: `soroban_sdk::Address`
+ --> tests/ui/critical_temporary.rs:1:5
+  |
+1 | use soroban_sdk::Address;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

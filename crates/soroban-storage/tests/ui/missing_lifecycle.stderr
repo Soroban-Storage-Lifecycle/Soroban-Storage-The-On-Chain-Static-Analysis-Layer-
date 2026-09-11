@@ -1,0 +1,13 @@
+error: storage entry requires an explicit lifecycle: add `#[storage(persistent)]`, `#[storage(temporary)]`, or `#[storage(instance)]`
+ --> tests/ui/missing_lifecycle.rs:5:5
+  |
+5 |     Balance(Address) -> i128,
+  |     ^^^^^^^
+
+warning: unused import: `soroban_sdk::Address`
+ --> tests/ui/missing_lifecycle.rs:1:5
+  |
+1 | use soroban_sdk::Address;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

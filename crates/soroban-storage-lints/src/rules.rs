@@ -10,7 +10,7 @@
 use quote::ToTokens;
 use syn::Expr;
 
-use crate::parse::{FileModel, Lifecycle, StorageChain};
+use crate::parse::{FileModel, FnStorage, Lifecycle, StorageChain};
 
 /// Maximum TTL a temporary entry can be extended to (network parameter, ~180
 /// days at ~5s ledgers). Kept local so the linter stays dependency-free.
@@ -116,10 +116,7 @@ pub fn type_looks_collection(type_str: &str) -> bool {
 /// Best-effort resolution of the value type written through a storage call.
 ///
 /// Returns `None` when the type cannot be determined from syntax alone.
-fn resolve_value_type(
-    chain: &StorageChain,
-    bindings: &std::collections::HashMap<String, String>,
-) -> Option<String> {
+fn resolve_value_type(chain: &StorageChain, f: &FnStorage, model: &FileModel) -> Option<String> {
     let value_expr = match chain.method.as_str() {
         "set" | "try_update" => chain.args.get(1),
         "update" => chain.args.get(1),
@@ -127,7 +124,7 @@ fn resolve_value_type(
     }?;
     match value_expr {
         // `set(&key, &val)` — the value is often behind a reference.
-        Expr::Reference(r) => resolve_value_expr(&r.expr, bindings),
+        Expr::Reference(r) => resolve_value_expr(&r.expr, f, model),
         Expr::Closure(c) => {
             // `update(&key, |bal: Balance| ...)` — type from the closure param.
             for input in &c.inputs {
@@ -137,25 +134,54 @@ fn resolve_value_type(
             }
             None
         }
-        other => resolve_value_expr(other, bindings),
+        other => resolve_value_expr(other, f, model),
     }
 }
 
-fn resolve_value_expr(
-    expr: &Expr,
-    bindings: &std::collections::HashMap<String, String>,
-) -> Option<String> {
+fn resolve_value_expr(expr: &Expr, f: &FnStorage, model: &FileModel) -> Option<String> {
     match expr {
+        // `balance` / `self` / `contract.balance`
         Expr::Path(p) => {
-            let last = p.path.segments.last()?;
-            let name = last.ident.to_string();
-            bindings.get(&name).cloned()
+            let name = p.path.segments.last()?.ident.to_string();
+            f.bindings.get(&name).cloned().or_else(|| {
+                // `self` inside an impl method resolves to the impl's Self type.
+                if name == "self" {
+                    f.self_type.clone()
+                } else {
+                    None
+                }
+            })
         }
-        Expr::Field(f) => {
-            // `self.balance` / `x.balance` — use the field name as a type hint.
-            Some(f.member.to_token_stream().to_string().replace(' ', ""))
+        // `self.balance` / `vault.balance` — resolve the field's declared type
+        // from the struct definition when the receiver type is known.
+        Expr::Field(field) => {
+            let base = field.base.as_ref();
+            let receiver = match base {
+                Expr::Path(p) => {
+                    let name = p.path.segments.last()?.ident.to_string();
+                    if name == "self" {
+                        f.self_type.clone()
+                    } else {
+                        f.bindings.get(&name).cloned()
+                    }
+                }
+                _ => None,
+            }?;
+            let field_name = field.member.to_token_stream().to_string().replace(' ', "");
+            let fields = model.struct_field_types.get(&receiver)?;
+            fields.get(&field_name).cloned()
         }
+        // `TokenBalance { amount: 5 }` — the struct literal's type is known
+        // from syntax alone.
+        Expr::Struct(s) => Some(s.path.segments.last()?.ident.to_string()),
+        // `balances.get(user)` / `prices.last()` — a method call on a typed
+        // binding; extract the value/element generic argument.
         Expr::MethodCall(mc) => {
+            if let Some(ty) = binding_type_of(&mc.receiver, f) {
+                if let Some(element) = generic_element(&ty) {
+                    return Some(element);
+                }
+            }
             // `get_balance(&env)` — method name as a hint when it contains a
             // critical word; otherwise unresolved.
             let method = mc.method.to_string();
@@ -165,7 +191,44 @@ fn resolve_value_expr(
                 None
             }
         }
+        // `balances[0]` — index into a typed collection.
+        Expr::Index(idx) => {
+            let ty = binding_type_of(&idx.expr, f)?;
+            generic_element(&ty)
+        }
         _ => None,
+    }
+}
+
+/// The type of the expression a method is called on, when it is a simple
+/// binding or `self` field.
+fn binding_type_of(expr: &Expr, f: &FnStorage) -> Option<String> {
+    match expr {
+        Expr::Path(p) => {
+            let name = p.path.segments.last()?.ident.to_string();
+            if name == "self" {
+                f.self_type.clone()
+            } else {
+                f.bindings.get(&name).cloned()
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extracts the value/element type of a generic collection, e.g.
+/// `Map<Address, Balance>` -> `Balance`, `Vec<Balance>` -> `Balance`,
+/// `Option<Balance>` -> `Balance`. Returns `None` for non-generic types.
+fn generic_element(ty: &str) -> Option<String> {
+    let open = ty.find('<')?;
+    let close = ty.rfind('>')?;
+    let args = &ty[open + 1..close];
+    let last = args.rsplit(',').next()?;
+    let last = last.trim();
+    if last.is_empty() || last.contains('<') {
+        None
+    } else {
+        Some(last.to_string())
     }
 }
 
@@ -220,7 +283,7 @@ pub fn temporary_critical_type(model: &FileModel, out: &mut Vec<RuleFinding>) {
                 }
             }
             // 2. Value type is `Critical`-derived in this crate.
-            if let Some(ty) = resolve_value_type(chain, &f.bindings) {
+            if let Some(ty) = resolve_value_type(chain, f, model) {
                 if model.critical_types.contains(&ty) {
                     reasons.push(format!("value type `{ty}` derives `Critical`"));
                 } else if type_looks_critical(&ty) {
@@ -337,7 +400,7 @@ pub fn instance_storage_bloat(model: &FileModel, out: &mut Vec<RuleFinding>) {
                     "written inside a loop (instance entry grows on every iteration)".to_string(),
                 );
             }
-            if let Some(ty) = resolve_value_type(chain, &f.bindings) {
+            if let Some(ty) = resolve_value_type(chain, f, model) {
                 if type_looks_collection(&ty) {
                     reasons.push(format!(
                         "value type `{ty}` is an unbounded collection — consider persistent \

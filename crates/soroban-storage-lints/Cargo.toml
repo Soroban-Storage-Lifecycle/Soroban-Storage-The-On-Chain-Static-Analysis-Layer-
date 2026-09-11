@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Static analysis for Soroban contract storage: flags critical types in temporary storage, missing TTL extensions, and instance-storage bloat. Ships as the `cargo soroban-lint` subcommand."
+repository.workspace = true
 keywords = ["stellar", "soroban", "static-analysis", "lint", "storage"]
 categories = ["development-tools"]
 

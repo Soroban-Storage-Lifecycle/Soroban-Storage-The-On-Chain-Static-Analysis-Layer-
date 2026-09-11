@@ -1,5 +1,8 @@
 /target
 /.toolchain
+# Vendored toolchain + cargo registry caches (large, machine-local)
+/.cargo
+/.rustup
 Cargo.lock.orig
 *.profraw
 # Soroban host snapshots (written when a test panics)

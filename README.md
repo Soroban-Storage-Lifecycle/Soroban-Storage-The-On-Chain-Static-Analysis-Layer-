@@ -24,6 +24,8 @@ safe-defaults library plus the static analyzer that the ecosystem is missing.
 | [`crates/soroban-storage`](crates/soroban-storage) | The `storage!` macro + runtime: every key is bound to **exactly one lifecycle** at compile time, accessors **auto-bump TTLs** on read/write, and `critical` entries (balances, funds) are **rejected** in `temporary` storage with a hard compile error. |
 | [`crates/soroban-storage-lints`](crates/soroban-storage-lints) | `cargo soroban-lint`: static analysis that flags critical types written through `env.storage().temporary()`, keys accessed through the wrong lifecycle, write paths with no TTL extension, and instance-storage bloat. |
 | [`.github/workflows/storage-lint.yml`](.github/workflows/storage-lint.yml) + [packaged action](.github/actions/soroban-storage-check/action.yml) | CI that fails developer builds when storage lint errors are found, and builds the contract for the Soroban wasm target. |
+| [`crates/soroban-rent-keeper`](crates/soroban-rent-keeper) | Off-chain daemon: watches entry TTLs over RPC, classifies eviction risk, and submits batched `ExtendFootprintTTLOp` transactions before entries expire. Exposes Prometheus metrics. |
+| [`crates/soroban-restore-planner`](crates/soroban-restore-planner) | CLI that discovers archived persistent entries via RPC simulation and emits a ready-to-sign `RestoreFootprintOp` transaction to bring them back. |
 | [`crates/example-contract`](crates/example-contract) | A working vault contract (balances, grants, nonces, admin) demonstrating every feature, with host tests. |
 
 ## Quick start
@@ -117,12 +119,35 @@ the toolchain, runs the linter (failing on errors), and builds the contract
 wasm. Example workflow in
 [`.github/workflows/storage-lint.yml`](.github/workflows/storage-lint.yml).
 
+## Companion tools
+
+In-contract bump-on-access keeps *actively used* data alive. Two off-chain
+tools in this workspace cover the rest:
+
+```bash
+# Watch deployed contracts and extend TTLs before eviction.
+cargo run -p soroban-rent-keeper -- --config config.json
+
+# Recover archived persistent entries with a RestoreFootprintOp.
+cargo run -p soroban-restore-planner -- \
+    --contract C... --source G... \
+    --rpc-url https://soroban-testnet.stellar.org \
+    --network-passphrase "Test SDF Network ; September 2015"
+```
+
+See [docs/rent-keeper.md](docs/rent-keeper.md) and
+[docs/restore-planner.md](docs/restore-planner.md) for the configuration
+reference and operational notes. Both network layers document the same
+caveat: the build/sign/submit flows are fake-tested but not yet verified
+against a live network, so validate on testnet before mainnet automation.
+
 ## Development
 
 ```bash
-cargo test --workspace        # host tests: framework + example contract
+cargo test --workspace        # host tests: framework, linter, keeper, planner, example contract
 cargo run -q -p soroban-storage-lints -- --deny-warnings crates/example-contract/src
 cargo build --release --target wasm32v1-none -p example-contract
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
@@ -135,13 +160,18 @@ The toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
   archival semantics, TTL policies, and what the framework enforces.
 - [**Lint rules reference**](docs/lint-rules.md) — every rule with examples,
   rationale, and how to opt out.
+- [**Rent keeper**](docs/rent-keeper.md) — the off-chain TTL extender:
+  configuration, metrics, and operational notes.
+- [**Restore planner**](docs/restore-planner.md) — recovering archived
+  persistent entries with `RestoreFootprintOp`.
 
 ## Scope
 
-This repository is the *on-chain & static-analysis layer*: the crate, the
-linter, and the CI gate. The companion **rent-keeper daemon** (watches deployed
-contract TTLs via RPC and submits `ExtendFootprintTTLOp` batches) and the
-**restore-planner CLI** live in the sibling `soroban-rent-keeper` repository.
+The workspace covers the whole storage lifecycle: the on-chain framework and
+its compile-time guarantees, the static analyzer and its CI gate, and the two
+off-chain tools — the `soroban-rent-keeper` daemon and the
+`soroban-restore-planner` CLI — that keep deployed contracts' data alive and
+recoverable.
 
 ## License
 
