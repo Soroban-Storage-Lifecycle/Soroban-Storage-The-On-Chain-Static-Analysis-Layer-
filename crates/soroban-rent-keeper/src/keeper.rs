@@ -154,6 +154,12 @@ impl<R: Rpc> Keeper<R> {
 
     /// One poll of every watched contract. Returns one result per watch.
     pub async fn poll_once(&self) -> Vec<Result<PollReport, String>> {
+        // Refresh the balance gauge each cycle; a failure here is not fatal
+        // (the retry/error counters already surface RPC trouble).
+        if let Ok(balance) = self.rpc.signer_balance_stroops().await {
+            self.metrics.set_signer_balance(balance);
+        }
+
         let current = match with_retry(self.retry, &self.metrics, "global", || {
             self.rpc.latest_ledger()
         })

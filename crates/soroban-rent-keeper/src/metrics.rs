@@ -3,7 +3,7 @@
 use std::net::TcpListener;
 use std::thread;
 
-use prometheus::{Encoder, IntCounterVec, IntGaugeVec, Opts, Registry, TextEncoder};
+use prometheus::{Encoder, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder};
 
 /// Metrics exposed by the keeper, labeled by contract and entry.
 #[derive(Clone)]
@@ -15,6 +15,7 @@ pub struct Metrics {
     entries_watched: IntGaugeVec,
     retries_total: IntCounterVec,
     poll_errors_total: IntCounterVec,
+    signer_balance: IntGauge,
 }
 
 impl Metrics {
@@ -67,6 +68,11 @@ impl Metrics {
             &["contract"],
         )
         .unwrap();
+        let signer_balance = IntGauge::new(
+            "soroban_rent_keeper_signer_balance_stroops",
+            "Signer account balance in stroops (refreshed each poll)",
+        )
+        .unwrap();
         let registry = Registry::new();
         registry.register(Box::new(ttl_ledgers.clone())).unwrap();
         registry
@@ -82,6 +88,7 @@ impl Metrics {
         registry
             .register(Box::new(poll_errors_total.clone()))
             .unwrap();
+        registry.register(Box::new(signer_balance.clone())).unwrap();
         Metrics {
             registry,
             ttl_ledgers,
@@ -90,6 +97,7 @@ impl Metrics {
             entries_watched,
             retries_total,
             poll_errors_total,
+            signer_balance,
         }
     }
 
@@ -129,6 +137,11 @@ impl Metrics {
     /// Records a poll cycle that failed after exhausting its retries.
     pub fn inc_poll_error(&self, contract: &str) {
         self.poll_errors_total.with_label_values(&[contract]).inc();
+    }
+
+    /// Records the signer account balance observed on this poll.
+    pub fn set_signer_balance(&self, stroops: i64) {
+        self.signer_balance.set(stroops);
     }
 
     /// The Prometheus text-format exposition of all metrics.
