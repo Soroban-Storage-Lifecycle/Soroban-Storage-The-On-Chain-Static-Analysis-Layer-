@@ -2481,13 +2481,11 @@ dependencies = [
 name = "soroban-rent-keeper"
 version = "0.1.0"
 dependencies = [
- "ed25519-dalek",
  "prometheus",
  "serde",
  "serde_json",
- "sha2",
+ "soroban-stellar-common",
  "stellar-rpc-client",
- "stellar-strkey 0.0.16",
  "stellar-xdr",
  "tokio",
 ]
@@ -2496,12 +2494,10 @@ dependencies = [
 name = "soroban-restore-planner"
 version = "0.1.0"
 dependencies = [
- "ed25519-dalek",
  "serde",
  "serde_json",
- "sha2",
+ "soroban-stellar-common",
  "stellar-rpc-client",
- "stellar-strkey 0.0.16",
  "stellar-xdr",
  "tokio",
 ]
@@ -2577,6 +2573,16 @@ dependencies = [
  "stellar-xdr",
  "syn 2.0.119",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "soroban-stellar-common"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "sha2",
+ "stellar-strkey 0.0.16",
+ "stellar-xdr",
 ]
 
 [[package]]

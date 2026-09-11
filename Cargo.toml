@@ -4,6 +4,7 @@ members = [
     "crates/soroban-storage",
     "crates/soroban-storage-macros",
     "crates/soroban-storage-lints",
+    "crates/soroban-stellar-common",
     "crates/soroban-rent-keeper",
     "crates/soroban-restore-planner",
     "crates/example-contract",
@@ -21,6 +22,7 @@ description = "Safe storage lifecycle framework for Soroban smart contracts: exp
 soroban-sdk = "27.0.6"
 soroban-storage = { version = "0.1.0", path = "crates/soroban-storage" }
 soroban-storage-macros = { version = "0.1.0", path = "crates/soroban-storage-macros" }
+soroban-stellar-common = { version = "0.1.0", path = "crates/soroban-stellar-common" }
 
 [profile.release]
 opt-level = "s"

@@ -4,6 +4,7 @@
 //! No network access happens here, so this is the part of the planner that is
 //! exhaustively unit-tested.
 
+use soroban_stellar_common::{muxed, vecm};
 use stellar_xdr as xdr;
 use stellar_xdr::{Limits, WriteXdr};
 
@@ -43,22 +44,6 @@ pub struct PlannedRestore {
     pub transaction: xdr::Transaction,
     /// The unsigned transaction envelope as base64-XDR.
     pub unsigned_xdr: String,
-}
-
-/// A `VecM` from a `Vec`, with the length bound enforced by the XDR type.
-fn vecm<T, const N: u32>(items: Vec<T>) -> Result<xdr::VecM<T, N>, String> {
-    items
-        .try_into()
-        .map_err(|e| format!("too many elements for XDR vector: {e}"))
-}
-
-/// Converts an account id into the muxed form a transaction carries.
-pub fn muxed(account: &xdr::AccountId) -> xdr::MuxedAccount {
-    match account {
-        xdr::AccountId(xdr::PublicKey::PublicKeyTypeEd25519(h)) => {
-            xdr::MuxedAccount::Ed25519(h.clone())
-        }
-    }
 }
 
 /// Builds the candidate footprint for a restore: every candidate goes in the

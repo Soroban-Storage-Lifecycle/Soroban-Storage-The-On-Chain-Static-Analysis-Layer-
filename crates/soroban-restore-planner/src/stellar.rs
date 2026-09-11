@@ -1,5 +1,8 @@
 //! Production [`Rpc`] implementation on top of `stellar-rpc-client` and
-//! `stellar-xdr`, plus transaction signing.
+//! `stellar-xdr`.
+//!
+//! Strkey decoding, ledger-key construction and signing live in
+//! [`soroban_stellar_common`], shared with the rent keeper.
 //!
 //! # Caveat
 //!
@@ -8,15 +11,17 @@
 //! network in the test suite. Verify one restore end-to-end against testnet
 //! before relying on it in automation.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use sha2::{Digest, Sha256};
+use soroban_stellar_common::{contract_instance_key, vecm, wasm_hash_from_entry};
 use stellar_rpc_client::Client;
 use stellar_xdr as xdr;
-use stellar_xdr::{Limits, ReadXdr, WriteXdr};
+use stellar_xdr::{Limits, ReadXdr};
 
-use crate::keys::{self, account_strkey};
 use crate::plan::Simulation;
 use crate::rpc::Rpc;
+
+// Signing is security-critical and shared with the rent keeper; re-exported so
+// the planner's public API is unchanged.
+pub use soroban_stellar_common::{account_from_secret, sign_envelope};
 
 /// The planner's network implementation.
 pub struct StellarRpc {
@@ -25,63 +30,6 @@ pub struct StellarRpc {
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
-}
-
-fn vecm<T, const N: u32>(items: Vec<T>) -> Result<xdr::VecM<T, N>, String> {
-    items
-        .try_into()
-        .map_err(|e| format!("too many elements for XDR vector: {e}"))
-}
-
-/// Derives the account id and signing key from an `S...` strkey.
-fn keypair_from_secret(secret: &str) -> Result<(xdr::AccountId, SigningKey), String> {
-    let strkey = stellar_strkey::Strkey::from_string(secret)
-        .map_err(|e| format!("invalid signer secret: {e}"))?;
-    let bytes = match strkey {
-        stellar_strkey::Strkey::PrivateKeyEd25519(bytes) => bytes.0,
-        _ => return Err("signer secret must be a private key (`S...`) strkey".to_string()),
-    };
-    let signing_key = SigningKey::from_bytes(&bytes);
-    let verifying = signing_key.verifying_key().to_bytes();
-    let account = xdr::AccountId(xdr::PublicKey::PublicKeyTypeEd25519(xdr::Uint256(
-        verifying,
-    )));
-    Ok((account, signing_key))
-}
-
-/// The `G...` account that a given `S...` signer secret controls.
-pub fn account_from_secret(secret: &str) -> Result<xdr::AccountId, String> {
-    keypair_from_secret(secret).map(|(account, _)| account)
-}
-
-/// Signs a transaction for `passphrase`, returning the base64-XDR V1 envelope.
-///
-/// The signature payload is the XDR of `TransactionSignaturePayload`
-/// (`sha256(passphrase)` as the network id plus the tagged transaction),
-/// hashed with SHA-256.
-pub fn sign_envelope(
-    tx: &xdr::Transaction,
-    secret: &str,
-    passphrase: &str,
-) -> Result<String, String> {
-    let (_, signing_key) = keypair_from_secret(secret)?;
-    let network_id = Sha256::digest(passphrase.as_bytes());
-    let payload = xdr::TransactionSignaturePayload {
-        network_id: xdr::Hash(network_id.into()),
-        tagged_transaction: xdr::TransactionSignaturePayloadTaggedTransaction::Tx(tx.clone()),
-    };
-    let digest = Sha256::digest(payload.to_xdr(Limits::none()).map_err(err)?);
-    let signature: Signature = signing_key.sign(&digest);
-    let verifying: VerifyingKey = signing_key.verifying_key();
-    let hint = xdr::SignatureHint(verifying.to_bytes()[..4].try_into().map_err(err)?);
-    let envelope = xdr::TransactionEnvelope::Tx(xdr::TransactionV1Envelope {
-        tx: tx.clone(),
-        signatures: vecm(vec![xdr::DecoratedSignature {
-            hint,
-            signature: xdr::Signature::try_from(signature.to_bytes().to_vec()).map_err(err)?,
-        }])?,
-    });
-    envelope.to_xdr_base64(Limits::none()).map_err(err)
 }
 
 impl StellarRpc {
@@ -167,12 +115,12 @@ impl Rpc for StellarRpc {
     }
 
     async fn fetch_wasm_hash(&self, contract_id: [u8; 32]) -> Result<Option<[u8; 32]>, String> {
-        let key = keys::contract_instance_key(contract_id);
+        let key = contract_instance_key(contract_id);
         let response = self.client.get_ledger_entries(&[key]).await.map_err(err)?;
         for result in response.entries.unwrap_or_default() {
             let entry =
                 xdr::LedgerEntry::from_xdr_base64(&result.xdr, Limits::none()).map_err(err)?;
-            if let Some(hash) = keys::wasm_hash_from_entry(&entry) {
+            if let Some(hash) = wasm_hash_from_entry(&entry) {
                 return Ok(Some(hash));
             }
         }
@@ -181,6 +129,4 @@ impl Rpc for StellarRpc {
 }
 
 /// Re-exported so callers can format an account consistently.
-pub fn account_address(account: &xdr::AccountId) -> String {
-    account_strkey(account)
-}
+pub use soroban_stellar_common::account_strkey as account_address;

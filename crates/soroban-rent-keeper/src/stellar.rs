@@ -1,6 +1,9 @@
 //! Production [`Rpc`] implementation on top of `stellar-rpc-client` and
 //! `stellar-xdr`.
 //!
+//! Strkey decoding, ledger-key construction and signing live in
+//! [`soroban_stellar_common`], shared with the restore planner.
+//!
 //! # Caveat
 //!
 //! The transaction build/simulate/sign/submit flow here follows the documented
@@ -8,13 +11,16 @@
 //! fee → sign → submit), but it is exercised without a live network in the
 //! test suite. Before pointing the daemon at mainnet, run it against a testnet
 //! RPC with a funded account and verify one extension end-to-end.
+//!
+//! [`Rpc`]: crate::rpc::Rpc
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use sha2::{Digest, Sha256};
+use soroban_stellar_common::{
+    account_strkey, contract_code_key, contract_instance_key, decode_contract_id,
+    decorated_signature, keypair_from_secret, muxed, vecm, SigningKey,
+};
 use stellar_rpc_client::Client;
-use stellar_xdr::{Limits, ReadXdr, WriteXdr};
-// stellar-xdr 27 exposes the current-protocol types at the crate root.
 use stellar_xdr as xdr;
+use stellar_xdr::{Limits, ReadXdr, WriteXdr};
 
 use crate::config::ContractConfig;
 use crate::keeper::WatchConfig;
@@ -32,84 +38,11 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// A `VecM` from a `Vec`, with the length bound enforced by the XDR type.
-fn vecm<T, const N: u32>(items: Vec<T>) -> Result<xdr::VecM<T, N>, String> {
-    items.try_into().map_err(err)
-}
-
-fn keypair_from_secret(secret: &str) -> Result<(xdr::AccountId, SigningKey), String> {
-    let strkey = stellar_strkey::Strkey::from_string(secret)
-        .map_err(|e| format!("invalid signer secret: {e}"))?;
-    let bytes = match strkey {
-        stellar_strkey::Strkey::PrivateKeyEd25519(bytes) => bytes.0,
-        _ => return Err("signer secret must be a private key strkey".to_string()),
-    };
-    let signing_key = SigningKey::from_bytes(&bytes);
-    let verifying = signing_key.verifying_key().to_bytes();
-    let account_id = xdr::AccountId(xdr::PublicKey::PublicKeyTypeEd25519(xdr::Uint256(
-        verifying,
-    )));
-    Ok((account_id, signing_key))
-}
-
-/// The `G...` strkey of an ed25519 account id.
-fn account_strkey(account: &xdr::AccountId) -> String {
-    match account {
-        xdr::AccountId(xdr::PublicKey::PublicKeyTypeEd25519(h)) => {
-            // `ed25519::PublicKey` has an inherent `to_string` returning a
-            // heapless string, so go through `Display` for a std `String`.
-            format!("{}", stellar_strkey::ed25519::PublicKey(h.0))
-        }
-    }
-}
-
-/// The transaction-level source account as a `MuxedAccount`.
-fn muxed(account: &xdr::AccountId) -> xdr::MuxedAccount {
-    match account {
-        xdr::AccountId(xdr::PublicKey::PublicKeyTypeEd25519(h)) => {
-            xdr::MuxedAccount::Ed25519(h.clone())
-        }
-    }
-}
-
-fn decode_contract_id(strkey: &str) -> Result<[u8; 32], String> {
-    match stellar_strkey::Strkey::from_string(strkey).map_err(err)? {
-        stellar_strkey::Strkey::Contract(bytes) => Ok(bytes.0),
-        _ => Err(format!("{strkey} is not a contract id strkey")),
-    }
-}
-
-fn ledger_key_instance(contract_id: [u8; 32]) -> xdr::LedgerKey {
-    xdr::LedgerKey::ContractData(xdr::LedgerKeyContractData {
-        contract: xdr::ScAddress::Contract(xdr::ContractId(xdr::Hash(contract_id))),
-        key: xdr::ScVal::LedgerKeyContractInstance,
-        durability: xdr::ContractDataDurability::Persistent,
-    })
-}
-
-fn ledger_key_code(wasm_hash: [u8; 32]) -> xdr::LedgerKey {
-    xdr::LedgerKey::ContractCode(xdr::LedgerKeyContractCode {
-        hash: xdr::Hash(wasm_hash),
-    })
-}
-
 fn entry_size_bytes(entry: &xdr::LedgerEntry) -> u32 {
     entry
         .to_xdr(Limits::none())
         .map(|b| b.len() as u32)
         .unwrap_or(300)
-}
-
-/// The SHA-256 signature payload for a V1 transaction: the `network_id`
-/// (`sha256(passphrase)`) plus the tagged transaction, hashed again.
-fn signature_payload(tx: &xdr::Transaction, passphrase: &str) -> Result<[u8; 32], String> {
-    let network_id = Sha256::digest(passphrase.as_bytes());
-    let payload = xdr::TransactionSignaturePayload {
-        network_id: xdr::Hash(network_id.into()),
-        tagged_transaction: xdr::TransactionSignaturePayloadTaggedTransaction::Tx(tx.clone()),
-    };
-    let bytes = payload.to_xdr(Limits::none()).map_err(err)?;
-    Ok(Sha256::digest(bytes).into())
 }
 
 impl StellarRpc {
@@ -148,7 +81,7 @@ impl StellarRpc {
     /// (whose `wasm_hash` yields the code key) plus any configured data keys.
     pub async fn build_watch(&self, cc: &ContractConfig) -> Result<WatchConfig, String> {
         let contract_id = decode_contract_id(&cc.contract_id)?;
-        let instance_key = ledger_key_instance(contract_id);
+        let instance_key = contract_instance_key(contract_id);
         let entries = self
             .client
             .get_ledger_entries(std::slice::from_ref(&instance_key))
@@ -176,7 +109,7 @@ impl StellarRpc {
         });
         match wasm_hash {
             Some(hash) => {
-                let code_key = ledger_key_code(hash);
+                let code_key = contract_code_key(hash);
                 keys.push(WatchKey {
                     label: "code".to_string(),
                     key_xdr: code_key.to_xdr_base64(Limits::none()).map_err(err)?,
@@ -365,16 +298,11 @@ impl Rpc for StellarRpc {
         let final_tx =
             self.build_extend_transaction(next_seq, current_ledger, extend_to, sim_data, fee)?;
 
-        let payload = signature_payload(&final_tx, &self.network_passphrase)?;
-        let signature: Signature = self.signing_key.sign(&payload);
-        let verifying: VerifyingKey = self.signing_key.verifying_key();
-        let hint = xdr::SignatureHint(verifying.to_bytes()[..4].try_into().map_err(err)?);
+        let signature =
+            decorated_signature(&self.signing_key, &final_tx, &self.network_passphrase)?;
         let final_envelope = xdr::TransactionEnvelope::Tx(xdr::TransactionV1Envelope {
             tx: final_tx,
-            signatures: vecm(vec![xdr::DecoratedSignature {
-                hint,
-                signature: xdr::Signature::try_from(signature.to_bytes().to_vec()).map_err(err)?,
-            }])?,
+            signatures: vecm(vec![signature])?,
         });
 
         let response = self
