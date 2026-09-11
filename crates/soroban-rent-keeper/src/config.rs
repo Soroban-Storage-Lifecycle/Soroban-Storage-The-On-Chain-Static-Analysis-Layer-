@@ -47,6 +47,14 @@ pub struct Config {
     /// Seconds between polls.
     #[serde(default = "default_poll_interval_secs")]
     pub poll_interval_secs: u64,
+    /// Opt out of the check that every contract's `threshold_ledgers` covers
+    /// the ledgers elapsing between polls. Leave `false` unless you have an
+    /// out-of-band reason to allow it.
+    #[serde(default)]
+    pub allow_short_threshold: bool,
+    /// Minimum signer balance in stroops, enforced at startup. Default: 1 XLM.
+    #[serde(default = "default_min_signer_balance")]
+    pub min_signer_balance_stroops: i64,
     pub contracts: Vec<ContractConfig>,
 }
 
@@ -60,6 +68,18 @@ fn default_max_batch_bytes() -> u32 {
 
 fn default_poll_interval_secs() -> u64 {
     600
+}
+
+fn default_min_signer_balance() -> i64 {
+    10_000_000 // 1 XLM
+}
+
+/// Ledgers close roughly every 5 seconds on the public networks.
+const SECONDS_PER_LEDGER: u64 = 5;
+
+/// Ledgers that elapse between two polls at `poll_interval_secs`.
+pub fn ledgers_per_poll(poll_interval_secs: u64) -> u32 {
+    (poll_interval_secs / SECONDS_PER_LEDGER).min(u32::MAX as u64) as u32
 }
 
 impl Config {
@@ -104,6 +124,24 @@ impl Config {
                     "contract {}: threshold_ledgers ({}) must be < extend_to_ledgers ({})",
                     c.contract_id, c.threshold_ledgers, c.extend_to_ledgers
                 ));
+            }
+        }
+        if self.min_signer_balance_stroops < 0 {
+            return Err("min_signer_balance_stroops must not be negative".to_string());
+        }
+        // An entry whose TTL is above the threshold at poll N can still expire
+        // before poll N+1 if the threshold is shorter than the poll cadence.
+        if !self.allow_short_threshold {
+            let elapsed = ledgers_per_poll(self.poll_interval_secs);
+            for c in &self.contracts {
+                if c.threshold_ledgers < elapsed {
+                    return Err(format!(
+                        "contract {}: threshold_ledgers ({}) is below the ~{} ledgers that elapse \
+                         between polls (poll_interval_secs {}); an entry can expire between two \
+                         polls. Raise threshold_ledgers or set allow_short_threshold: true",
+                        c.contract_id, c.threshold_ledgers, elapsed, self.poll_interval_secs
+                    ));
+                }
             }
         }
         Ok(())
@@ -174,5 +212,73 @@ mod tests {
         let cfg = Config::load("config.example.json").expect("example config is valid");
         assert_eq!(cfg.contracts.len(), 1);
         assert!(cfg.contracts[0].threshold_ledgers < cfg.contracts[0].extend_to_ledgers);
+    }
+
+    #[test]
+    fn ledgers_per_poll_uses_the_5s_cadence() {
+        assert_eq!(ledgers_per_poll(600), 120);
+        assert_eq!(ledgers_per_poll(4), 0);
+    }
+
+    #[test]
+    fn rejects_threshold_below_the_poll_cadence() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "rpc_url": "https://rpc",
+                "network_passphrase": "Test",
+                "signer_secret": "S",
+                "poll_interval_secs": 600,
+                "contracts": [{
+                    "contract_id": "C",
+                    "threshold_ledgers": 100,
+                    "extend_to_ledgers": 500
+                }]
+            }"#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.contains("elapse between polls"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn allows_a_short_threshold_when_opted_out() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "rpc_url": "https://rpc",
+                "network_passphrase": "Test",
+                "signer_secret": "S",
+                "poll_interval_secs": 600,
+                "allow_short_threshold": true,
+                "contracts": [{
+                    "contract_id": "C",
+                    "threshold_ledgers": 100,
+                    "extend_to_ledgers": 500
+                }]
+            }"#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_negative_signer_floor() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "rpc_url": "https://rpc",
+                "network_passphrase": "Test",
+                "signer_secret": "S",
+                "min_signer_balance_stroops": -1,
+                "contracts": [{
+                    "contract_id": "C",
+                    "threshold_ledgers": 172800,
+                    "extend_to_ledgers": 518400
+                }]
+            }"#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
     }
 }

@@ -14,6 +14,7 @@ use std::time::Duration;
 use soroban_rent_keeper::config::Config;
 use soroban_rent_keeper::keeper::Keeper;
 use soroban_rent_keeper::metrics;
+use soroban_rent_keeper::risk;
 use soroban_rent_keeper::stellar::StellarRpc;
 
 fn help() -> &'static str {
@@ -86,6 +87,29 @@ fn main() -> ExitCode {
         if let Err(e) = rpc.verify_network().await {
             eprintln!("network error: {e}");
             return ExitCode::FAILURE;
+        }
+
+        // Fail fast if the signer cannot pay for extensions; otherwise the
+        // keeper would tick along reporting `error` metrics while entries expire.
+        match rpc.signer_balance_stroops().await {
+            Ok(balance) => {
+                if !risk::signer_balance_is_sufficient(balance, config.min_signer_balance_stroops) {
+                    eprintln!(
+                        "signer balance {balance} stroops is below the configured floor {}; \
+                         fund the account or lower min_signer_balance_stroops",
+                        config.min_signer_balance_stroops
+                    );
+                    return ExitCode::FAILURE;
+                }
+                eprintln!(
+                    "signer balance {balance} stroops (floor {})",
+                    config.min_signer_balance_stroops
+                );
+            }
+            Err(e) => {
+                eprintln!("balance check failed: {e}");
+                return ExitCode::FAILURE;
+            }
         }
 
         let mut watches = Vec::new();
