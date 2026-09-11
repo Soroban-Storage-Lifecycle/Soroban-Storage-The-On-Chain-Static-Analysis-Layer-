@@ -127,6 +127,27 @@ JSON (`--json`):
 }
 ```
 
+## Verifying on testnet
+
+```bash
+export SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
+export SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+export SOROBAN_SIGNER_SECRET=S...
+export SOROBAN_TEST_CONTRACT=C...
+cargo test -p soroban-restore-planner --test testnet_smoke
+```
+
+The test self-skips unless all four variables are set. It verifies the
+passphrase, resolves the candidates and produces a plan, printing how many
+entries the network reports as archived.
+
+To exercise a real restore: archive a throwaway contract by leaving it
+untouched past its TTL, run the test and confirm `archived >= 1`, then run the
+CLI with `--submit` and re-check that the instance entry is live again.
+Submitting is deliberately **not** part of the automated smoke test — there is
+no generic way to guarantee an archived target exists, and a restore with
+nothing archived is not a meaningful assertion.
+
 ## Caveats
 
 - **Signed with a network passphrase.** The signature covers
