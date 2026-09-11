@@ -1,0 +1,15 @@
+{
+  "rpc_url": "https://soroban-testnet.stellar.org",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "signer_secret": "S...",
+  "submit": false,
+  "contracts": [
+    {
+      "contract_id": "C..."
+    },
+    {
+      "contract_id": "C...",
+      "wasm_hash": "0101010101010101010101010101010101010101010101010101010101010101"
+    }
+  ]
+}

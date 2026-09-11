@@ -28,7 +28,8 @@ soroban-restore-planner --contract C... --signer-secret S... --submit ...
 
 | Option | Description |
 |---|---|
-| `--contract <C...>` | Contract id to restore (required) |
+| `--contract <C...>` | Contract id to restore (required in single mode) |
+| `--config <file.json>` | Batch mode: restore every contract in the file |
 | `--rpc-url <URL>` | Stellar RPC endpoint (or `SOROBAN_RPC_URL`) |
 | `--network-passphrase <PASS>` | Must match the RPC network (or `SOROBAN_NETWORK_PASSPHRASE`) |
 | `--source <G...>` | Transaction source account (or derived from `--signer-secret`) |
@@ -40,6 +41,41 @@ soroban-restore-planner --contract C... --signer-secret S... --submit ...
 | `--json` | Emit a JSON report |
 
 Exit codes: `0` success, `1` runtime failure, `2` usage error.
+
+## Batch mode
+
+Restoring a fleet (a shared code hash, a whole deployment) one contract at a
+time means scripting the CLI and parsing N outputs. `--config` takes a list
+instead:
+
+```json
+{
+  "rpc_url": "https://soroban-testnet.stellar.org",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "signer_secret": "S...",
+  "submit": false,
+  "contracts": [
+    { "contract_id": "C..." },
+    { "contract_id": "C...", "wasm_hash": "0101..." }
+  ]
+}
+```
+
+```bash
+soroban-restore-planner --config contracts.json --out envelopes/
+soroban-restore-planner --config contracts.json --json > results.json
+```
+
+The run continues past failures — one bad contract id does not stop the rest —
+and exits non-zero if any contract failed. With `--json` the output is an array
+of `{ contract, ok, report, error }`; in human mode each contract is printed and
+a final `N contract(s): X ok, Y failed` summary line is emitted. `--out` is
+treated as a **directory** in batch mode and each unsigned envelope is written
+to `<out>/<contract_id>.xdr`.
+
+Flags (`--rpc-url`, `--network-passphrase`, `--source`, `--signer-secret`,
+`--submit`) override the corresponding config fields. A template lives at
+[`crates/soroban-restore-planner/restore.example.json`](../crates/soroban-restore-planner/restore.example.json).
 
 ## How discovery works
 
