@@ -17,6 +17,7 @@ cargo soroban-lint src --deny-warnings
 | `missing_ttl_extension` | warning | fails with `--deny-warnings` |
 | `instance_storage_bloat` | warning | fails with `--deny-warnings` |
 | `temporary_ttl_exceeded` | warning | fails with `--deny-warnings` |
+| `persistent_ttl_exceeded` | warning | fails with `--deny-warnings` |
 
 Exit codes: `0` clean (or warnings without `--deny-warnings`), `1` errors found
 (or warnings with `--deny-warnings`), `2` usage error.
@@ -147,6 +148,30 @@ ledgers ≈ 180 days at ~5s ledgers).
 
 **Why:** the host clamps the extension silently, so the code claims a lifetime
 the network will not honor. The effective TTL is shorter than intended.
+
+**Fix:** extend to at most the network maximum (check
+`lab.stellar.org/network-limits` for current values — they are network
+parameters and can change via upgrades).
+
+---
+
+## `persistent_ttl_exceeded` (warning)
+
+**What it flags:** `.persistent().extend_ttl(key, threshold, extend_to)` or
+`.instance().extend_ttl(...)` where `extend_to` exceeds the network maximum for
+persistent/instance entries (`6_311_390` ledgers ≈ 1 year at ~5s ledgers).
+
+**Why:** exactly the temporary case, one lifecycle over — the host clamps the
+extension silently, so the code claims a lifetime the network will not honor,
+and the resource fee for the excess buys nothing.
+
+```rust
+// flagged: beyond the persistent maximum
+env.storage().persistent().extend_ttl(&key, 0, 7_000_000);
+
+// fine: within the network maximum
+env.storage().persistent().extend_ttl(&key, 17_280, 518_400);
+```
 
 **Fix:** extend to at most the network maximum (check
 `lab.stellar.org/network-limits` for current values — they are network

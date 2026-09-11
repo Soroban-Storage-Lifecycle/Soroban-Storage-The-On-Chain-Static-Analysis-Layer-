@@ -143,6 +143,20 @@ fn temp_ttl_exceeded_is_flagged() {
 }
 
 #[test]
+fn persistent_ttl_exceeded_is_flagged() {
+    let findings = lint_fixture("persistent_ttl_exceeded.rs");
+    assert_has(&findings, "persistent_ttl_exceeded", Severity::Warning);
+    // Persistent and instance cases flagged; the within-limit one must stay quiet.
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|f| f.rule == "persistent_ttl_exceeded")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn ignored_rules_are_skipped() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")

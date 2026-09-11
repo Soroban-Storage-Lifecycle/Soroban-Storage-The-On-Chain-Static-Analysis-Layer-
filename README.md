@@ -107,6 +107,7 @@ Rules (see [docs/lint-rules.md](docs/lint-rules.md)):
 | `missing_ttl_extension` | warning | write paths that never extend the entry TTL |
 | `instance_storage_bloat` | warning | unbounded / loop-written values in instance storage |
 | `temporary_ttl_exceeded` | warning | temporary extensions beyond the network max TTL (host clamps silently) |
+| `persistent_ttl_exceeded` | warning | persistent/instance extensions beyond the network max TTL |
 
 The linter is a syntactic analyzer (Slither-style): it runs in milliseconds on
 source without building the contract, and emits GitHub Actions annotations when
