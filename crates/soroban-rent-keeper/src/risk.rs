@@ -65,6 +65,11 @@ pub fn ledgers_until_critical(ttl: u32, threshold_ledgers: u32) -> i64 {
     i64::from(ttl) - i64::from(threshold_ledgers)
 }
 
+/// Whether the signer account can still pay for extensions.
+pub fn signer_balance_is_sufficient(balance_stroops: i64, floor_stroops: i64) -> bool {
+    balance_stroops >= floor_stroops
+}
+
 /// An entry queued for extension.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchEntry {
@@ -164,5 +169,12 @@ mod tests {
     #[test]
     fn empty_input_yields_no_batches() {
         assert!(plan_batches(&[], 10_000).is_empty());
+    }
+
+    #[test]
+    fn signer_balance_floor() {
+        assert!(signer_balance_is_sufficient(10_000_000, 10_000_000));
+        assert!(signer_balance_is_sufficient(1, 0));
+        assert!(!signer_balance_is_sufficient(9_999_999, 10_000_000));
     }
 }

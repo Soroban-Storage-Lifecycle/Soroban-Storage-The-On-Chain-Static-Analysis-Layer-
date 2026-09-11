@@ -61,6 +61,16 @@ impl StellarRpc {
         })
     }
 
+    /// The signer account's current balance, in stroops.
+    pub async fn signer_balance_stroops(&self) -> Result<i64, String> {
+        let entry = self
+            .client
+            .get_account(&account_strkey(&self.source_account))
+            .await
+            .map_err(err)?;
+        Ok(entry.balance)
+    }
+
     /// Verifies the RPC network matches the configured passphrase.
     pub async fn verify_network(&self) -> Result<(), String> {
         let actual = self

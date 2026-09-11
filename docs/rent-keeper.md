@@ -48,6 +48,7 @@ The daemon reads a JSON file passed with `--config`:
   "metrics_addr": "127.0.0.1:9090",
   "max_batch_bytes": 200000,
   "poll_interval_secs": 600,
+  "min_signer_balance_stroops": 10000000,
   "contracts": [
     {
       "contract_id": "C...",
@@ -67,6 +68,8 @@ The daemon reads a JSON file passed with `--config`:
 | `metrics_addr` | `127.0.0.1:9090` | `host:port` for `/metrics` |
 | `max_batch_bytes` | `200000` | Upper bound on one extension footprint |
 | `poll_interval_secs` | `600` | Seconds between polls |
+| `allow_short_threshold` | `false` | Opt out of the threshold-vs-poll-cadence check |
+| `min_signer_balance_stroops` | `10000000` (1 XLM) | Startup floor for the signer balance |
 | `contracts[].contract_id` | — | `C...` contract id |
 | `contracts[].threshold_ledgers` | `172800` (~10 days) | Extend when TTL drops to this |
 | `contracts[].extend_to_ledgers` | `518400` (~30 days) | Extend to at least this |
@@ -109,13 +112,19 @@ before then).
 ## Operational notes
 
 - **Fund the signer.** Extensions cost the resource fee reported by
-  simulation plus the inclusion fee. A keeper that runs out of XLM silently
-  fails to extend, so monitor the error counter and the account balance.
+  simulation plus the inclusion fee. The startup floor catches an *empty*
+  account, but it does not know your run-rate, so still alert on
+  `extensions_total{outcome="error"}` and watch the balance over time.
 - **One keeper per signer.** Concurrent keepers sharing a source account race
   on the sequence number; run a single instance or give each its own account.
-- **Threshold vs. poll cadence.** Keep `threshold_ledgers` comfortably larger
-  than the TTL you can lose between polls (`poll_interval_secs` worth of
-  ledgers) so a transient RPC outage does not cost you the entry.
+- **Threshold vs. poll cadence is enforced.** At ~5s per ledger, a
+  `poll_interval_secs` of 600 means ~120 ledgers elapse between polls. A
+  contract with `threshold_ledgers < 120` can have an entry cross from *Safe*
+  to *expired* between two polls, so config load fails with a clear message;
+  set `allow_short_threshold: true` only if you have an out-of-band reason.
+- **Signer balance floor.** The daemon checks the signer's balance at startup
+  and refuses to run below `min_signer_balance_stroops` (default 1 XLM), rather
+  than ticking along reporting `error` metrics while entries expire.
 - **The network layer is not live-tested.** The build/simulate/sign/submit
   flow follows the documented pattern but has only been exercised against
   fakes. Verify one extension on testnet before trusting it with mainnet
